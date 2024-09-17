@@ -3,20 +3,21 @@ from copy import deepcopy
 from re import A
 
 import lark
+from sympy import Mul
 
 rules=r"""
 start: text1*
-text1: (other|emphasis|op|cp|ob|cb)*
-text2: (other|emphasis)*
+text1: (other|emphasis|op|cp|ob|cb|break1)*
+text2: (other|emphasis|break2)*
 emphasis: "(" text2* ":" S* weight1 (S* weight2)* S* ")"
 ?other: (OTHER|escaped|COLON|BACKSLASH)+
 ?escaped.1: "\\" (OP|CP|OB|CB)
-weight1.1: MULTIPLIER1 [KEY [THRESHOLD]]
-weight2.1: multiplier2 [KEY [THRESHOLD]]
-MULTIPLIER1: /[+-]?(?:\d+\.?\d*|\d*\.?\d+)/
+weight1.1: multiplier1 [key [threshold]]
+weight2.1: multiplier2 [key [threshold]]
+multiplier1: /[+-]?(?:\d+\.?\d*|\d*\.?\d+)/
 multiplier2: signs /(?:\d+\.?\d*|\d*\.?\d+)/
-KEY: /[a-zA-Z]/
-THRESHOLD: /\d+\.?\d*|\d*\.?\d+/
+key: /[a-zA-Z]/
+threshold: /\d+\.?\d*|\d*\.?\d+/
 S: /\s/
 OTHER: /[^\(\)\[\]\:\\]+/
 op: OP
@@ -36,6 +37,8 @@ np: /\-\s*\+/
 nn: /\-\s*\-/
 p: /\+\s*/
 n: /\-\s*/
+break1.1: /^BREAK\s+|\s+BREAK$/
+break2.2: /\sBREAK\s/
 %ignore S
 """
 lark_rules = lark.lark.Lark(rules)
@@ -51,11 +54,18 @@ class EmphasisPair():
 def parse_prompt_attention(text):
     emphasis_pairs: list[EmphasisPair] = []
     root = lark_rules.parse(text)
+
     class Preprocess(lark.visitors.Transformer):
+        def multiplier1(self, children: list):
+            return str.join("", children)
         def multiplier2(self, children: list):
             return str.join("", children)
         def signs(self, children: list):
-            return children[0]
+            return str.join("", children)
+        def key(self, children: list):
+            return str.join("", children)
+        def threshold(self, children: list):
+            return str.join("", children)
         def pp(self, token:lark.lexer.Token):
             return "+"
         def pn(self, token:lark.lexer.Token):
@@ -68,8 +78,10 @@ def parse_prompt_attention(text):
             return "+"
         def n(self, token:lark.lexer.Token):
             return "-"
+        
     root = Preprocess().transform(root)
     multiplier = [[Multiplier(1.0, "c", 0.0)]]
+
     class Parser(lark.visitors.Interpreter):
         def start(self, tree: lark.tree.Tree):
             for i in tree.children:
@@ -103,10 +115,32 @@ def parse_prompt_attention(text):
             multiplier.append([Multiplier(1.0 / 1.1, "c", 0.0)])
         def cb(self, tree: lark.tree.Tree):
             multiplier.append([Multiplier(1.1, "c", 0.0)])
+        def break1(self, tree: lark.tree.Tree):
+            tokens = []
+            for i in tree.children:
+                i = str.strip(i)
+                tokens.append(i)
+            emphasis_pairs.append(EmphasisPair(str.join("", tokens), multiplier))
+        def break2(self, tree: lark.tree.Tree):
+            tokens = []
+            for i in tree.children:
+                i = str.strip(i)
+                tokens.append(i)
+            emphasis_pairs.append(EmphasisPair(str.join("", tokens), multiplier))
+
+    def flatten_multipliers(emphasis_pairs: list[EmphasisPair]) -> list[EmphasisPair]:
+        for emphasis_pair in emphasis_pairs:
+            multiplier_list: list[Multiplier] = []
+            for multipliers in emphasis_pair.multipliers:
+                for multiplier in multipliers:
+                    multiplier_list.append(multiplier)
+            emphasis_pair.multipliers = multiplier_list
+        return emphasis_pairs
 
     Parser().visit(root)
+    emphasis_pairs = flatten_multipliers(emphasis_pairs)
     return emphasis_pairs
 
 
-a = (parse_prompt_attention("(test\(:1+2k3. + .4r5.6)"))
-print(a)
+# a = (parse_prompt_attention(r"BREAK (tes\t\(  BREAK   :1+2k3. + .4r5.6) BREAK"))
+# print(a)
