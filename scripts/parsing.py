@@ -1,9 +1,6 @@
-from collections import namedtuple
 from copy import deepcopy
-from re import A
 
 import lark
-from sympy import Mul
 
 rules=r"""
 start: text1*
@@ -43,7 +40,12 @@ break2.2: /\sBREAK\s/
 """
 lark_rules = lark.lark.Lark(rules)
 
-Multiplier = namedtuple("Multiplier", ["weight", "key", "threshold"])
+class Multiplier():
+    def __init__(self, weight: float = 1.0, key: str = "c", threshold: float = 0.0) -> None:
+        self.weight = weight
+        self.key = key
+        self.threshold = threshold
+        pass
 
 class EmphasisPair():
     def __init__(self, text: str, multipliers: list[Multiplier]) -> None:

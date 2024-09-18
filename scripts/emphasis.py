@@ -1,0 +1,41 @@
+from math import ceil
+import torch
+
+from scripts.parsing import Multiplier
+
+
+class Emphasis:
+    name: str = "Base"
+    description: str = ""
+    tokens: list[list[int]]
+    multipliers: list[list[Multiplier]]
+    z: torch.Tensor
+
+    def after_transformers(self):
+        pass
+
+class TopKEmphasis(Emphasis):
+    name = "Top K Emphasis"
+    description = "Expanded emphasis method"
+
+    def after_transformers(self):
+        original_mean = self.z.mean()
+        self.z = self.z * self.multipliers.reshape(self.multipliers.shape + (1,)).expand(self.z.shape)
+        new_mean = self.z.mean()
+        self.z = self.z * (original_mean / new_mean)
+
+        for i in range(self.z.shape[0]):
+            for j in range(self.z.shape[1]):
+                z_dec = self.z[i, j, :].sort(descending=True).values
+                for k in self.multipliers[j]:
+                    if k.key == "c":
+                        if k.threshold < 0.0:
+                            raise ValueError("Negative threshold is unacceptable.")
+                        elif k.threshold == 0.0:
+                            self.z[i, j, :] *= k.weight
+                        elif k.threshold < 1.0:
+                            threshold = z_dec[int(k.threshold * self.z.shape[2])]
+                            self.z[i, j, :] *= torch.where(self.z[i, j, :] >= threshold, k.weight, 1.0)
+                        else:
+                            threshold = z_dec[min(k.threshold, self.z.shape[2] - 1)]
+                            self.z[i, j, :] *= torch.where(self.z[i, j, :] >= threshold, k.weight, 1.0)
