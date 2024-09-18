@@ -1,14 +1,17 @@
 import gradio
+
 import modules
 import modules.scripts
 from modules.processing import StableDiffusionProcessing
+from backend.args import dynamic_args
 
 from scripts import prompt_parser
+from scripts.classic_engine import ClassicTextProcessingEngineTopKEmphasis
 
 filtering_locations = ["Text Processing", "After K", "After QK", "After QKV"]
 zero_point = ["Zero", "Mean of Prompt", "Median of Prompt", "Mean of Padding", "Median of padding"]
 
-class Script(modules.scripts.Script):
+class TopKEmphasis(modules.scripts.Script):
     """
     Applies emphasis at following locations:
         "c": After conditioning has been constructed.
@@ -18,6 +21,12 @@ class Script(modules.scripts.Script):
         "s": After every softmax in cross attention.
         "v": After every v in cross attention.
     """
+
+    model_type = None
+    text_processing_engine_original = None
+    text_processing_engine_l_original = None
+    text_processing_engine_g_original = None
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -33,4 +42,53 @@ class Script(modules.scripts.Script):
     
     def process_batch(self, p: StableDiffusionProcessing, active, *args, **kwargs):
         if not active: return
+        if hasattr(p.sd_model, "text_processing_engine"):
+            TopKEmphasis.model_type = "SD1.5"
+            TopKEmphasis.text_processing_engine_original = p.sd_model.text_processing_engine
+            if not isinstance(p.sd_model.text_processing_engine, ClassicTextProcessingEngineTopKEmphasis):
+                p.sd_model.text_processing_engine = ClassicTextProcessingEngineTopKEmphasis(
+                    text_encoder=p.sd_model.text_processing_engine.text_encoder,
+                    tokenizer=p.sd_model.text_processing_engine.tokenizer,
+                    embedding_dir=dynamic_args['embedding_dir'],
+                    embedding_key='clip_l',
+                    embedding_expected_shape=768,
+                    emphasis_name=dynamic_args['emphasis_name'],
+                    text_projection=False,
+                    minimal_clip_skip=1,
+                    clip_skip=1,
+                    return_pooled=False,
+                    final_layer_norm=True,
+                )
+        if hasattr(p.sd_model, "text_processing_engine_l") and hasattr(p.sd_model, "text_processing_engine_g"):
+            TopKEmphasis.model_type = "SDXL"
+            TopKEmphasis.text_processing_engine_l_original = p.sd_model.text_processing_engine_l
+            if not isinstance(p.sd_model.text_processing_engine_l, ClassicTextProcessingEngineTopKEmphasis):
+                p.sd_model.text_processing_engine_l = ClassicTextProcessingEngineTopKEmphasis(
+                    text_encoder=p.sd_model.text_processing_engine_l.text_encoder,
+                    tokenizer=p.sd_model.text_processing_engine_l.tokenizer,
+                    embedding_dir=dynamic_args['embedding_dir'],
+                    embedding_key='clip_l',
+                    embedding_expected_shape=2048,
+                    emphasis_name=dynamic_args['emphasis_name'],
+                    text_projection=False,
+                    minimal_clip_skip=2,
+                    clip_skip=2,
+                    return_pooled=False,
+                    final_layer_norm=False,
+                )
+            TopKEmphasis.text_processing_engine_g_original = p.sd_model.text_processing_engine_g
+            if not isinstance(p.sd_model.text_processing_engine_g, ClassicTextProcessingEngineTopKEmphasis):
+                p.sd_model.text_processing_engine_g = ClassicTextProcessingEngineTopKEmphasis(
+                    text_encoder=p.sd_model.text_processing_engine_g.text_encoder,
+                    tokenizer=p.sd_model.text_processing_engine_g.tokenizer,
+                    embedding_dir=dynamic_args['embedding_dir'],
+                    embedding_key='clip_g',
+                    embedding_expected_shape=2048,
+                    emphasis_name=dynamic_args['emphasis_name'],
+                    text_projection=True,
+                    minimal_clip_skip=2,
+                    clip_skip=2,
+                    return_pooled=True,
+                    final_layer_norm=False,
+                )
         p.c = prompt_parser.get_multicond_learned_conditioning(p.sd_model, p.prompts, p.steps)

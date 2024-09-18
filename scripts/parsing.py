@@ -48,10 +48,32 @@ class Multiplier():
         pass
 
 class EmphasisPair():
-    def __init__(self, text: str, multipliers: list[Multiplier]) -> None:
+    def __init__(self, text: str = "", multipliers: list[Multiplier] = [Multiplier()]) -> None:
         self.text = deepcopy(text)
         self.multipliers = deepcopy(multipliers)
+
+    def __iter__(self):
+        return EmphasisPairIterator(self)
+    
+class EmphasisPairIterator():
+    def __init__(self, ref: EmphasisPair) -> None:
+        self.i = 0
+        self.ref = ref
         pass
+
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
+        match self.i:
+            case 0:
+                self.i += 1
+                return self.ref.text
+            case 1:
+                self.i += 1
+                return self.ref.multipliers
+            case _:
+                raise StopIteration()
 
 def parse_prompt_attention(text):
     emphasis_pairs: list[EmphasisPair] = []
@@ -82,7 +104,7 @@ def parse_prompt_attention(text):
             return "-"
         
     root = Preprocess().transform(root)
-    multiplier = [[Multiplier(1.0, "c", 0.0)]]
+    multiplier = [[Multiplier()]]
 
     class Parser(lark.visitors.Interpreter):
         def start(self, tree: lark.tree.Tree):
@@ -95,7 +117,11 @@ def parse_prompt_attention(text):
                 elif isinstance(i, lark.lexer.Token):
                     emphasis_pairs.append(EmphasisPair(i, multiplier))
         def text2(self, tree: lark.tree.Tree):
-            Parser().visit_children(tree)
+            for i in tree.children:
+                if isinstance(i, lark.tree.Tree):
+                    Parser().visit(i)
+                elif isinstance(i, lark.lexer.Token):
+                    emphasis_pairs.append(EmphasisPair(i, multiplier))
         def emphasis(self, tree: lark.tree.Tree):
             multiplier_this = []
             multiplier_this.append(Multiplier(float(tree.children[1].children[0]), tree.children[1].children[1] or "c", float(tree.children[1].children[2] or 0.0)))

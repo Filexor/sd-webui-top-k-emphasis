@@ -7,8 +7,9 @@ from backend import memory_management
 
 from scripts import emphasis, parsing 
 
+last_extra_generation_params = {}
 
-class ClassicTextProcessingEngine:
+class ClassicTextProcessingEngineTopKEmphasis:
     def __init__(
             self, text_encoder, tokenizer, chunk_length=75,
             embedding_dir=None, embedding_key='clip_l', embedding_expected_shape=768, emphasis_name="Original",
@@ -27,7 +28,7 @@ class ClassicTextProcessingEngine:
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
 
-        self.emphasis = emphasis.TopKEmphasis
+        self.emphasis = emphasis.TopKEmphasis()
         self.text_projection = text_projection
         self.minimal_clip_skip = minimal_clip_skip
         self.clip_skip = clip_skip
@@ -68,7 +69,7 @@ class ClassicTextProcessingEngine:
     def empty_chunk(self):
         chunk = PromptChunk()
         chunk.tokens = [self.id_start] + [self.id_end] * (self.chunk_length + 1)
-        chunk.multipliers = [] * (self.chunk_length + 2)
+        chunk.multipliers = [parsing.EmphasisPair()] * (self.chunk_length + 2)
         return chunk
 
     def get_target_prompt_token_count(self, token_count):
@@ -108,7 +109,9 @@ class ClassicTextProcessingEngine:
     def tokenize_line(self, line):
         parsed = parsing.parse_prompt_attention(line)
 
-        tokenized = self.tokenize([text for text, _ in parsed])
+        if len(parsed) == 0:
+            parsed = [parsing.EmphasisPair()]
+        tokenized = self.tokenize([pair.text for pair in parsed])
 
         chunks = []
         chunk = PromptChunk()
@@ -128,17 +131,17 @@ class ClassicTextProcessingEngine:
             to_add = self.chunk_length - len(chunk.tokens)
             if to_add > 0:
                 chunk.tokens += [self.id_end] * to_add
-                chunk.multipliers += [] * to_add
+                chunk.multipliers += [parsing.EmphasisPair()] * to_add
 
             chunk.tokens = [self.id_start] + chunk.tokens + [self.id_end]
-            chunk.multipliers = [] + chunk.multipliers + []
+            chunk.multipliers = [parsing.EmphasisPair()] + chunk.multipliers + [parsing.EmphasisPair()]
 
             last_comma = -1
             chunks.append(chunk)
             chunk = PromptChunk()
 
-        for tokens, (text, weight) in zip(tokenized, parsed):
-            if text == 'BREAK':
+        for tokens, weight in zip(tokenized, parsed):
+            if weight.text == 'BREAK':
                 next_chunk()
                 continue
 
@@ -263,7 +266,7 @@ class ClassicTextProcessingEngine:
         pooled = getattr(z, 'pooled', None)
 
         self.emphasis.tokens = remade_batch_tokens
-        self.emphasis.multipliers = torch.asarray(batch_multipliers).to(z)
+        self.emphasis.multipliers = batch_multipliers
         self.emphasis.z = z
         self.emphasis.after_transformers()
         z = self.emphasis.z
