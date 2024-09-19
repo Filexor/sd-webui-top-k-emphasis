@@ -40,7 +40,7 @@ class TopKEmphasis(modules.scripts.Script):
         active = gradio.Checkbox(value=False, label="Enable Top K Emphasis")
         return [active]
     
-    def process_batch(self, p: StableDiffusionProcessing, active, *args, **kwargs):
+    def setup(self, p: StableDiffusionProcessing, active, *args, **kwargs):
         if not active: return
         if hasattr(p.sd_model, "text_processing_engine"):
             TopKEmphasis.model_type = "SD1.5"
@@ -59,7 +59,7 @@ class TopKEmphasis(modules.scripts.Script):
                     return_pooled=False,
                     final_layer_norm=True,
                 )
-        if hasattr(p.sd_model, "text_processing_engine_l") and hasattr(p.sd_model, "text_processing_engine_g"):
+        elif hasattr(p.sd_model, "text_processing_engine_l") and hasattr(p.sd_model, "text_processing_engine_g"):
             TopKEmphasis.model_type = "SDXL"
             TopKEmphasis.text_processing_engine_l_original = p.sd_model.text_processing_engine_l
             if not isinstance(p.sd_model.text_processing_engine_l, ClassicTextProcessingEngineTopKEmphasis):
@@ -91,4 +91,15 @@ class TopKEmphasis(modules.scripts.Script):
                     return_pooled=True,
                     final_layer_norm=False,
                 )
-        p.c = prompt_parser.get_multicond_learned_conditioning(p.sd_model, p.prompts, p.steps)
+
+    def postprocess(self, p: StableDiffusionProcessing, processed, active, *args):
+        if not active: return
+        match TopKEmphasis.model_type:
+            case "SD1.5":
+                if TopKEmphasis.text_processing_engine_original is not None:
+                    p.sd_model.text_processing_engine = TopKEmphasis.text_processing_engine_original
+            case "SDXL":
+                if TopKEmphasis.text_processing_engine_l_original is not None:
+                    p.sd_model.text_processing_engine_l = TopKEmphasis.text_processing_engine_l_original
+                if TopKEmphasis.text_processing_engine_g_original is not None:
+                    p.sd_model.text_processing_engine_g = TopKEmphasis.text_processing_engine_g_original

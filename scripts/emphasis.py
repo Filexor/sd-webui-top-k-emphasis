@@ -32,5 +32,5 @@ class TopKEmphasis(Emphasis):
                             threshold = z_dec[int(k.threshold * self.z.shape[2])]
                             self.z[i, j, :] *= torch.where(self.z[i, j, :] >= threshold, k.weight, 1.0)
                         else:
-                            threshold = z_dec[min(k.threshold, self.z.shape[2]) - 1]
+                            threshold = z_dec[min(int(k.threshold), self.z.shape[2]) - 1]
                             self.z[i, j, :] *= torch.where(self.z[i, j, :] >= threshold, k.weight, 1.0)
