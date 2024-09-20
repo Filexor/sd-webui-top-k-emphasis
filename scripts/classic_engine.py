@@ -251,9 +251,9 @@ class ClassicTextProcessingEngineTopKEmphasis:
             last_extra_generation_params["Emphasis"] = self.emphasis.name
 
         if self.return_pooled:
-            return (torch.hstack(zs), zs[0].pooled), batch_multipliers_list
+            return torch.hstack(zs), zs[0].pooled, batch_multipliers_list
         else:
-            return (torch.hstack(zs), ), batch_multipliers_list
+            return torch.hstack(zs), batch_multipliers_list
 
     def process_tokens(self, remade_batch_tokens, batch_multipliers):
         tokens = torch.asarray(remade_batch_tokens)

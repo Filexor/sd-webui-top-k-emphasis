@@ -189,7 +189,7 @@ def get_learned_conditioning(model, prompts: SdConditioning | list[str], steps, 
             continue
 
         texts = SdConditioning([x[1] for x in prompt_schedule], copy_from=prompts)
-        conds, multipliers = model.get_learned_conditioning(texts)
+        conds, multipliers = model.get_learned_conditioning(model, texts)
 
         cond_schedule = []
         for i, (end_at_step, _) in enumerate(prompt_schedule):
@@ -213,7 +213,7 @@ def get_learned_conditioning(model, prompts: SdConditioning | list[str], steps, 
         res.append(cond_schedule)
         res_multiplier.append(multipliers_schedule)
 
-        return res, res_multiplier
+    return res, res_multiplier
 
 
 re_AND = re.compile(r"\bAND\b")
@@ -380,3 +380,50 @@ def reconstruct_multicond_batch(c: MulticondLearnedConditioning, current_step):
         stacked = stack_conds(tensors).to(device=param.device, dtype=param.dtype)
 
     return conds_list, stacked
+
+
+def reconstruct_multiplier_batch(c: list[list[ScheduledPromptConditioning]], current_step):
+    tensors = []
+
+    for prompts in c:
+        target_index = 0
+        for current, entry in enumerate(prompts):
+            if current_step <= entry.end_at_step:
+                target_index = current
+                break
+
+        tensors.append(prompts[target_index].cond)
+
+    tensors: list[list[list]]
+    flattened = []
+    for i in tensors:
+        for j in i:
+            for k in j:
+                for l in k:
+                    flattened.append(l)
+
+    return flattened
+
+def reconstruct_multi_multiplier_batch(c: MulticondLearnedConditioning, current_step):
+    tensors = []
+
+    for composable_prompts in c.batch:
+
+        for composable_prompt in composable_prompts:
+            target_index = 0
+            for current, entry in enumerate(composable_prompt.schedules):
+                if current_step <= entry.end_at_step:
+                    target_index = current
+                    break
+
+            tensors.append(composable_prompt.schedules[target_index].cond)
+
+    tensors: list[list[list]]
+    flattened = []
+    for i in tensors:
+        for j in i:
+            for k in j:
+                for l in k:
+                    flattened.append(l)
+
+    return flattened
