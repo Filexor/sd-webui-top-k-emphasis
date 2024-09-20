@@ -375,11 +375,11 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         apply_top_k_emphasis(k, "k")
         if value is not None:
             v = self.to_v(value)
-            apply_top_k_emphasis(k, "v")
+            apply_top_k_emphasis(v, "v")
             del value
         else:
             v = self.to_v(context)
-            apply_top_k_emphasis(k, "v")
+            apply_top_k_emphasis(v, "v")
         if TopKEmphasis.extra_mode:
             out = cross_attension(q, k, v, self.heads, mask, transformer_options=transformer_options)
         else:
