@@ -25,7 +25,7 @@ class TopKEmphasis(modules.scripts.Script):
         "k": After every k in cross attention.
         "v": After every v in cross attention.
     Following can used with "Enbale Extra Mode":
-        "q": After every dot(q, k) in cross attention.
+        "q": After every matmul(q, k) in cross attention.
     """
 
     extra_mode = False
