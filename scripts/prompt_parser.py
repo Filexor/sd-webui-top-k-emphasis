@@ -176,6 +176,7 @@ def get_learned_conditioning(model, prompts: SdConditioning | list[str], steps, 
     ]
     """
     res = []
+    res_multiplier = []
 
     prompt_schedules = get_learned_conditioning_prompt_schedules(prompts, steps, hires_steps, use_old_scheduling)
     cache = {}
@@ -188,7 +189,7 @@ def get_learned_conditioning(model, prompts: SdConditioning | list[str], steps, 
             continue
 
         texts = SdConditioning([x[1] for x in prompt_schedule], copy_from=prompts)
-        conds = model.get_learned_conditioning(texts)
+        conds, multipliers = model.get_learned_conditioning(texts)
 
         cond_schedule = []
         for i, (end_at_step, _) in enumerate(prompt_schedule):
@@ -199,10 +200,20 @@ def get_learned_conditioning(model, prompts: SdConditioning | list[str], steps, 
 
             cond_schedule.append(ScheduledPromptConditioning(end_at_step, cond))
 
-        cache[prompt] = cond_schedule
-        res.append(cond_schedule)
+        multipliers_schedule = []
+        for i, (end_at_step, _) in enumerate(prompt_schedule):
+            if isinstance(multipliers, dict):
+                multiplier = {k: v[i] for k, v in multipliers.items()}
+            else:
+                multiplier = multipliers[i]
 
-    return res
+            multipliers_schedule.append(ScheduledPromptConditioning(end_at_step, multiplier))
+
+        cache[prompt] = (cond_schedule, multipliers_schedule)
+        res.append(cond_schedule)
+        res_multiplier.append(multipliers_schedule)
+
+        return res, res_multiplier
 
 
 re_AND = re.compile(r"\bAND\b")
@@ -261,13 +272,17 @@ def get_multicond_learned_conditioning(model, prompts, steps, hires_steps=None, 
 
     res_indexes, prompt_flat_list, prompt_indexes = get_multicond_prompt_list(prompts)
 
-    learned_conditioning = get_learned_conditioning(model, prompt_flat_list, steps, hires_steps, use_old_scheduling)
+    learned_conditioning, learned_multiplier = get_learned_conditioning(model, prompt_flat_list, steps, hires_steps, use_old_scheduling)
 
     res = []
     for indexes in res_indexes:
         res.append([ComposableScheduledPromptConditioning(learned_conditioning[i], weight) for i, weight in indexes])
 
-    return MulticondLearnedConditioning(shape=(len(prompts),), batch=res)
+    res_multiplier = []
+    for indexes in res_indexes:
+        res_multiplier.append([ComposableScheduledPromptConditioning(learned_multiplier[i], weight) for i, weight in indexes])
+
+    return MulticondLearnedConditioning(shape=(len(prompts),), batch=res), MulticondLearnedConditioning(shape=(len(prompts),), batch=res_multiplier)
 
 
 class DictWithShape(dict):

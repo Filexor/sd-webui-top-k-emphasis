@@ -217,6 +217,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
         chunk_count = max([len(x) for x in batch_chunks])
 
         zs = []
+        batch_multipliers_list = []
         for i in range(chunk_count):
             batch_chunk = [chunks[i] if i < len(chunks) else self.empty_chunk() for chunks in batch_chunks]
 
@@ -228,8 +229,9 @@ class ClassicTextProcessingEngineTopKEmphasis:
                 for _position, embedding in fixes:
                     used_embeddings[embedding.name] = embedding
 
-            z = self.process_tokens(tokens, multipliers)
+            z, batch_multipliers = self.process_tokens(tokens, multipliers)
             zs.append(z)
+            batch_multipliers_list.append(batch_multipliers)
 
         global last_extra_generation_params
 
@@ -249,9 +251,9 @@ class ClassicTextProcessingEngineTopKEmphasis:
             last_extra_generation_params["Emphasis"] = self.emphasis.name
 
         if self.return_pooled:
-            return torch.hstack(zs), zs[0].pooled
+            return (torch.hstack(zs), zs[0].pooled), batch_multipliers_list
         else:
-            return torch.hstack(zs)
+            return (torch.hstack(zs), ), batch_multipliers_list
 
     def process_tokens(self, remade_batch_tokens, batch_multipliers):
         tokens = torch.asarray(remade_batch_tokens)
@@ -274,4 +276,4 @@ class ClassicTextProcessingEngineTopKEmphasis:
         if pooled is not None:
             z.pooled = pooled
 
-        return z
+        return z, batch_multipliers
