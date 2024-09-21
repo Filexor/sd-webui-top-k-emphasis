@@ -6,7 +6,7 @@ rules=r"""
 start: text1*
 text1: (other|emphasis|op|cp|ob|cb|break1)*
 text2: (other|emphasis|break2)*
-emphasis: "(" text2* ":" S* weight1 (S* weight2)* S* ")"
+emphasis: "(" text2* ":" [S] weight1 ([S] weight2)* [S] ")"
 ?other: (OTHER|escaped|COLON|BACKSLASH)+
 ?escaped.1: "\\" (OP|CP|OB|CB)
 weight1.1: multiplier1 [key [threshold]]
@@ -15,7 +15,7 @@ multiplier1: /[+-]?(?:\d+\.?\d*|\d*\.?\d+)/
 multiplier2: signs /(?:\d+\.?\d*|\d*\.?\d+)/
 key: /[a-zA-Z]/
 threshold: /\d+\.?\d*|\d*\.?\d+/
-S: /\s/
+S: /\s+/
 OTHER: /[^\(\)\[\]\:\\]+/
 op: OP
 cp: CP
@@ -124,8 +124,8 @@ def parse_prompt_attention(text):
                     emphasis_pairs.append(EmphasisPair(i, multiplier))
         def emphasis(self, tree: lark.tree.Tree):
             multiplier_this = []
-            multiplier_this.append(Multiplier(float(tree.children[1].children[0]), tree.children[1].children[1] or "c", float(tree.children[1].children[2] or 0.0)))
-            for i in tree.children[2::2]:
+            multiplier_this.append(Multiplier(float(tree.children[2].children[0]), tree.children[2].children[1] or "c", float(tree.children[2].children[2] or 0.0)))
+            for i in tree.children[4::2]:
                 multiplier_this.append(Multiplier(float(i.children[0]), i.children[1] or "c", float(i.children[2] or 0.0)))
             multiplier.append(multiplier_this)
             Parser().visit(tree.children[0])
