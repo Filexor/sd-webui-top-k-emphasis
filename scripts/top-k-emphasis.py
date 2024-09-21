@@ -316,22 +316,22 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             multiplier = TopKEmphasis.current_step_s_mul
             threshold = TopKEmphasis.current_step_s_thres   # [depth, c/uc, token]
         token_count = multiplier.shape[-1]
-        threshold = torch.where(threshold == 0.0, z.shape[1], threshold)
-        threshold = torch.where(threshold < 1.0, threshold * z.shape[1], threshold)
+        z_dec = einops.rearrange(z, "(a b) c d -> (b c) (a d)", b=heads).sort(dim=0, descending=True).values
+        z = einops.rearrange(z, "(a b) c d -> (b c) (a d)", b=heads)
+        threshold = torch.where(threshold == 0.0, z.shape[0], threshold)
+        threshold = torch.where(threshold < 1.0, threshold * z.shape[0], threshold)
         threshold = threshold - 1
         threshold = threshold.to(dtype=torch.int32)
-        threshold = threshold[:, :, :].repeat_interleave(heads, dim=2).to(device)
-        multiplier = multiplier[:, :, :].repeat_interleave(heads, dim=2).to(device)
+        threshold = threshold[:, :, :].to(device)
+        multiplier = multiplier[:, :, :].to(device)
         threshold = einops.rearrange(threshold, "a b e -> a (b e)")
         multiplier = einops.rearrange(multiplier, "a b e -> a (b e)")
-        z_dec = einops.rearrange(z, "a c d -> c (a d)").sort(dim=0, descending=True).values
-        z = einops.rearrange(z, "a c d -> c (a d)")
         for i in range(threshold.shape[0]):
             selected_z_dec = z_dec.index_select(dim=0, index=threshold[i, :])[0, :]
             expanded_z_dec = selected_z_dec.unsqueeze(0).expand(z.shape[0], -1)
             expanded_multiplier = multiplier[i, :].unsqueeze(0).expand(z.shape[0], -1)
             z *= torch.where(z >= expanded_z_dec, expanded_multiplier, 1.0)
-        z = einops.rearrange(z, "c (a d) -> a c d", d=token_count)
+        z = einops.rearrange(z, "(b c) (a d) -> (a b) c d", b=heads, d=token_count)
         return z
 
     def cross_attension(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, transformer_options={}):
