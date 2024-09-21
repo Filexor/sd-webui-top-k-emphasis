@@ -14,8 +14,9 @@ There are 4 types of key:
 - "k" means result of to_k(conditioning) in cross attention will be multiplied by weight on every sampling step.
 - "v" means result of to_v(conditioning) in cross attention will be multiplied by weight on every sampling step.
 - "q" means result of matmul(q, k) in cross attention will be multiplied by weight on every sampling step.
+- "s" means is similar to "q" but applied after softmax.
 
-Note that using "q" requires to enable Extra Mode which makes slower because of disabling optimizations.
+Note that using "q", "s" requires to enable Extra Mode which makes slower because of disabling optimizations.
 
 Threshold has 3 ways of interpretations:
 - Threshold equal to 0 means all of channels will be multiplied.

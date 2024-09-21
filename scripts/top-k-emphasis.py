@@ -1,7 +1,9 @@
 import gradio
+from regex import W
 import torch
 import einops
 
+from backend.operations import weights_manual_cast
 import modules
 from modules.devices import device
 from modules.processing import StableDiffusionProcessing
@@ -26,6 +28,7 @@ class TopKEmphasis(modules.scripts.Script):
         "v": After every v in cross attention.
     Following can used with "Enbale Extra Mode":
         "q": After every matmul(q, k) in cross attention.
+        "s": Similar to "q" but after softmax.
     """
 
     extra_mode = False
@@ -42,6 +45,8 @@ class TopKEmphasis(modules.scripts.Script):
     current_step_k_thres = None
     current_step_v_mul = None
     current_step_v_thres = None
+    current_step_s_mul = None
+    current_step_s_thres = None
 
     def __init__(self) -> None:
         super().__init__()
@@ -135,18 +140,10 @@ class TopKEmphasis(modules.scripts.Script):
             nm += [EmphasisPair()] * d
         elif d < 0:
             pm += [EmphasisPair()] * -d
-        pmq, ptq = to_structure_of_tensor(pm, "q")
-        nmq, ntq = to_structure_of_tensor(nm, "q")
-        TopKEmphasis.current_step_q_mul = torch.stack((nmq, pmq), dim=1)
-        TopKEmphasis.current_step_q_thres = torch.stack((ntq, ptq), dim=1)
-        pmk, ptk = to_structure_of_tensor(pm, "k")
-        nmk, ntk = to_structure_of_tensor(nm, "k")
-        TopKEmphasis.current_step_k_mul = torch.stack((nmk, pmk), dim=1)
-        TopKEmphasis.current_step_k_thres = torch.stack((ntk, ptk), dim=1)
-        pmv, ptv = to_structure_of_tensor(pm, "v")
-        nmv, ntv = to_structure_of_tensor(nm, "v")
-        TopKEmphasis.current_step_v_mul = torch.stack((nmv, pmv), dim=1)
-        TopKEmphasis.current_step_v_thres = torch.stack((ntv, ptv), dim=1)
+        TopKEmphasis.current_step_q_mul, TopKEmphasis.current_step_q_thres = to_structure_of_tensor(pm, nm, "q")
+        TopKEmphasis.current_step_k_mul, TopKEmphasis.current_step_k_thres = to_structure_of_tensor(pm, nm, "k")
+        TopKEmphasis.current_step_v_mul, TopKEmphasis.current_step_v_thres = to_structure_of_tensor(pm, nm, "v")
+        TopKEmphasis.current_step_s_mul, TopKEmphasis.current_step_s_thres = to_structure_of_tensor(pm, nm, "s")
 
     def postprocess(self, p: StableDiffusionProcessing, processed, active, *args):
         if not active: return
@@ -221,11 +218,13 @@ def setup_conds(self: StableDiffusionProcessing):
     c, m = self.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, total_steps, [self.cached_c], self.extra_network_data)
     return c, m, uc, um
 
-def to_structure_of_tensor(input: list[EmphasisPair], key: str) -> tuple[torch.Tensor, torch.Tensor]:
-    count = 1
-    weights = []
-    thresholds = []
-    for i in input:
+def to_structure_of_tensor(positive: list[EmphasisPair], negative: list[EmphasisPair], key: str) -> tuple[torch.Tensor, torch.Tensor]:
+    count = 0
+    weights_p = []
+    thresholds_p = []
+    weights_n = []
+    thresholds_n = []
+    for i in positive:
         weight = []
         threshold = []
         count_tokenwise = 0
@@ -235,17 +234,37 @@ def to_structure_of_tensor(input: list[EmphasisPair], key: str) -> tuple[torch.T
                 weight.append(j.weight)
                 threshold.append(j.threshold)
         count = max(count, count_tokenwise)
-        weights.append(weight)
-        thresholds.append(threshold)
-    for i in weights:
+        weights_p.append(weight)
+        thresholds_p.append(threshold)
+    for i in negative:
+        weight = []
+        threshold = []
+        count_tokenwise = 0
+        for j in i.multipliers:
+            if j.key == key:
+                count_tokenwise += 1
+                weight.append(j.weight)
+                threshold.append(j.threshold)
+        count = max(count, count_tokenwise)
+        weights_n.append(weight)
+        thresholds_n.append(threshold)
+    for i in weights_p:
         i += [1.0] * (count - len(i))
-    for i in thresholds:
+    for i in thresholds_p:
         i += [0.0] * (count - len(i))
-    weight_t = torch.asarray(weights)
-    weight_t = einops.rearrange(weight_t, "a b -> b a")
-    threshold_t = torch.asarray(thresholds)
-    threshold_t = einops.rearrange(threshold_t, "a b -> b a")
-    return weight_t, threshold_t
+    for i in weights_n:
+        i += [1.0] * (count - len(i))
+    for i in thresholds_n:
+        i += [0.0] * (count - len(i))
+    weight_p = torch.asarray(weights_p)
+    weight_p = einops.rearrange(weight_p, "a b -> b a")
+    threshold_p = torch.asarray(thresholds_p)
+    threshold_p = einops.rearrange(threshold_p, "a b -> b a")
+    weight_n = torch.asarray(weights_n)
+    weight_n = einops.rearrange(weight_n, "a b -> b a")
+    threshold_n = torch.asarray(thresholds_n)
+    threshold_n = einops.rearrange(threshold_n, "a b -> b a")
+    return torch.stack((weight_n, weight_p), dim=1), torch.stack((threshold_n, threshold_p), dim=1)
 
 def hook_forward(top_k_emphasis: TopKEmphasis, self):
     FORCE_UPCAST_ATTENTION_DTYPE = memory_management.force_upcast_attention_dtype()
@@ -265,7 +284,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             return val
         return d
     
-    def apply_top_k_emphasis(z: torch.Tensor, key: str):
+    def apply_top_k_emphasis1(z: torch.Tensor, key: str):
         if key == "k":
             multiplier = TopKEmphasis.current_step_k_mul
             threshold = TopKEmphasis.current_step_k_thres   # [depth, c/uc, token]
@@ -289,9 +308,13 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         z = einops.rearrange(z, "d (a c) -> a c d", c=token_count)
         return z
 
-    def apply_top_k_emphasis_q(z: torch.Tensor, heads):
-        multiplier = TopKEmphasis.current_step_q_mul
-        threshold = TopKEmphasis.current_step_q_thres   # [depth, c/uc, token]
+    def apply_top_k_emphasis2(z: torch.Tensor, key: str, heads):
+        if key == "q":
+            multiplier = TopKEmphasis.current_step_q_mul
+            threshold = TopKEmphasis.current_step_q_thres   # [depth, c/uc, token]
+        if key == "s":
+            multiplier = TopKEmphasis.current_step_s_mul
+            threshold = TopKEmphasis.current_step_s_thres   # [depth, c/uc, token]
         token_count = multiplier.shape[-1]
         threshold = torch.where(threshold == 0.0, z.shape[1], threshold)
         threshold = torch.where(threshold < 1.0, threshold * z.shape[1], threshold)
@@ -344,7 +367,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             sim = torch.einsum('b i d, b j d -> b i j', q, k) * scale
 
         del q, k
-        sim = apply_top_k_emphasis_q(sim, heads)
+        sim = apply_top_k_emphasis2(sim, "q", heads)
 
         if exists(mask):
             if mask.dtype == torch.bool:
@@ -361,6 +384,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
                 sim.add_(mask)
 
         sim = sim.softmax(dim=-1)
+        sim = apply_top_k_emphasis2(sim, "s", heads)
         out = torch.einsum('b i j, b j d -> b i d', sim.to(v.dtype), v)
         out = (
             out.unsqueeze(0)
@@ -374,14 +398,14 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         q = self.to_q(x)
         context = default(context, x)
         k = self.to_k(context)
-        k = apply_top_k_emphasis(k, "k")
+        k = apply_top_k_emphasis1(k, "k")
         if value is not None:
             v = self.to_v(value)
-            v = apply_top_k_emphasis(v, "v")
+            v = apply_top_k_emphasis1(v, "v")
             del value
         else:
             v = self.to_v(context)
-            v = apply_top_k_emphasis(v, "v")
+            v = apply_top_k_emphasis1(v, "v")
         if TopKEmphasis.extra_mode:
             out = cross_attension(q, k, v, self.heads, mask, transformer_options=transformer_options)
         else:
