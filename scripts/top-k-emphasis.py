@@ -301,7 +301,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         z_dec = einops.rearrange(z, "a c d -> d (a c)").sort(dim=0, descending=True).values
         z = einops.rearrange(z, "a c d -> d (a c)")
         for i in range(threshold.shape[0]):
-            selected_z_dec = z_dec.index_select(dim=0, index=threshold[i, :])[0, :]
+            selected_z_dec = z_dec.index_select(dim=0, index=threshold[i, :]).diag()
             expanded_z_dec = selected_z_dec.unsqueeze(0).expand(z.shape[0], -1)
             expanded_multiplier = multiplier[i, :].unsqueeze(0).expand(z.shape[0], -1)
             z *= torch.where(z >= expanded_z_dec, expanded_multiplier, 1.0)
@@ -327,7 +327,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         threshold = einops.rearrange(threshold, "a b e -> a (b e)")
         multiplier = einops.rearrange(multiplier, "a b e -> a (b e)")
         for i in range(threshold.shape[0]):
-            selected_z_dec = z_dec.index_select(dim=0, index=threshold[i, :])[0, :]
+            selected_z_dec = z_dec.index_select(dim=0, index=threshold[i, :]).diag()
             expanded_z_dec = selected_z_dec.unsqueeze(0).expand(z.shape[0], -1)
             expanded_multiplier = multiplier[i, :].unsqueeze(0).expand(z.shape[0], -1)
             z *= torch.where(z >= expanded_z_dec, expanded_multiplier, 1.0)
