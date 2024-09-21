@@ -137,16 +137,16 @@ class TopKEmphasis(modules.scripts.Script):
             pm += [EmphasisPair()] * -d
         pmq, ptq = to_structure_of_tensor(pm, "q")
         nmq, ntq = to_structure_of_tensor(nm, "q")
-        TopKEmphasis.current_step_q_mul = torch.stack((pmq, nmq), dim=1)
-        TopKEmphasis.current_step_q_thres = torch.stack((ptq, ntq), dim=1)
+        TopKEmphasis.current_step_q_mul = torch.stack((nmq, pmq), dim=1)
+        TopKEmphasis.current_step_q_thres = torch.stack((ntq, ptq), dim=1)
         pmk, ptk = to_structure_of_tensor(pm, "k")
         nmk, ntk = to_structure_of_tensor(nm, "k")
-        TopKEmphasis.current_step_k_mul = torch.stack((pmk, nmk), dim=1)
-        TopKEmphasis.current_step_k_thres = torch.stack((ptk, ntk), dim=1)
+        TopKEmphasis.current_step_k_mul = torch.stack((nmk, pmk), dim=1)
+        TopKEmphasis.current_step_k_thres = torch.stack((ntk, ptk), dim=1)
         pmv, ptv = to_structure_of_tensor(pm, "v")
         nmv, ntv = to_structure_of_tensor(nm, "v")
-        TopKEmphasis.current_step_v_mul = torch.stack((pmv, nmv), dim=1)
-        TopKEmphasis.current_step_v_thres = torch.stack((ptv, ntv), dim=1)
+        TopKEmphasis.current_step_v_mul = torch.stack((nmv, pmv), dim=1)
+        TopKEmphasis.current_step_v_thres = torch.stack((ntv, ptv), dim=1)
 
     def postprocess(self, p: StableDiffusionProcessing, processed, active, *args):
         if not active: return
@@ -273,13 +273,13 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             multiplier = TopKEmphasis.current_step_v_mul
             threshold = TopKEmphasis.current_step_v_thres   # [depth, c/uc, token]
         token_count = multiplier.shape[-1]
-        threshold = torch.where(threshold == 0.0, z.shape[1], threshold)
-        threshold = torch.where(threshold < 1.0, threshold * z.shape[1], threshold)
+        threshold = torch.where(threshold == 0.0, z.shape[2], threshold)
+        threshold = torch.where(threshold < 1.0, threshold * z.shape[2], threshold)
         threshold = threshold - 1
         threshold = threshold.to(dtype=torch.int32)
         threshold = einops.rearrange(threshold, "a b e -> a (b e)").to(device)
         multiplier = einops.rearrange(multiplier, "a b e -> a (b e)").to(device)
-        z_dec = einops.rearrange(z, "a c d -> d (a c)").sort(dim=0).values
+        z_dec = einops.rearrange(z, "a c d -> d (a c)").sort(dim=0, descending=True).values
         z = einops.rearrange(z, "a c d -> d (a c)")
         for i in range(threshold.shape[0]):
             selected_z_dec = z_dec.index_select(dim=0, index=threshold[i, :])[0, :]
@@ -287,6 +287,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             expanded_multiplier = multiplier[i, :].unsqueeze(0).expand(z.shape[0], -1)
             z *= torch.where(z >= expanded_z_dec, expanded_multiplier, 1.0)
         z = einops.rearrange(z, "d (a c) -> a c d", c=token_count)
+        return z
 
     def apply_top_k_emphasis_q(z: torch.Tensor, heads):
         multiplier = TopKEmphasis.current_step_q_mul
@@ -300,7 +301,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         multiplier = multiplier[:, :, :].repeat_interleave(heads, dim=2).to(device)
         threshold = einops.rearrange(threshold, "a b e -> a (b e)")
         multiplier = einops.rearrange(multiplier, "a b e -> a (b e)")
-        z_dec = einops.rearrange(z, "a c d -> c (a d)").sort(dim=0).values
+        z_dec = einops.rearrange(z, "a c d -> c (a d)").sort(dim=0, descending=True).values
         z = einops.rearrange(z, "a c d -> c (a d)")
         for i in range(threshold.shape[0]):
             selected_z_dec = z_dec.index_select(dim=0, index=threshold[i, :])[0, :]
@@ -308,6 +309,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             expanded_multiplier = multiplier[i, :].unsqueeze(0).expand(z.shape[0], -1)
             z *= torch.where(z >= expanded_z_dec, expanded_multiplier, 1.0)
         z = einops.rearrange(z, "c (a d) -> a c d", d=token_count)
+        return z
 
     def cross_attension(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, transformer_options={}):
         attn_precision = get_attn_precision(attn_precision)
@@ -342,7 +344,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             sim = torch.einsum('b i d, b j d -> b i j', q, k) * scale
 
         del q, k
-        apply_top_k_emphasis_q(sim, heads)
+        sim = apply_top_k_emphasis_q(sim, heads)
 
         if exists(mask):
             if mask.dtype == torch.bool:
@@ -372,14 +374,14 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         q = self.to_q(x)
         context = default(context, x)
         k = self.to_k(context)
-        apply_top_k_emphasis(k, "k")
+        k = apply_top_k_emphasis(k, "k")
         if value is not None:
             v = self.to_v(value)
-            apply_top_k_emphasis(v, "v")
+            v = apply_top_k_emphasis(v, "v")
             del value
         else:
             v = self.to_v(context)
-            apply_top_k_emphasis(v, "v")
+            v = apply_top_k_emphasis(v, "v")
         if TopKEmphasis.extra_mode:
             out = cross_attension(q, k, v, self.heads, mask, transformer_options=transformer_options)
         else:

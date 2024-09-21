@@ -126,7 +126,7 @@ def parse_prompt_attention(text):
             multiplier_this = []
             multiplier_this.append(Multiplier(float(tree.children[1].children[0]), tree.children[1].children[1] or "c", float(tree.children[1].children[2] or 0.0)))
             for i in tree.children[2::2]:
-                multiplier_this.append(Multiplier(float(i.children[0]), i.children[1] or "c", float(i.children[2]) or 0.0))
+                multiplier_this.append(Multiplier(float(i.children[0]), i.children[1] or "c", float(i.children[2] or 0.0)))
             multiplier.append(multiplier_this)
             Parser().visit(tree.children[0])
             multiplier.pop()
