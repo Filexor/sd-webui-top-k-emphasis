@@ -22,3 +22,5 @@ Threshold has 3 ways of interpretations:
 - Threshold equal to 0 means all of channels will be multiplied.
 - Threshold below 1 means top `(threshold * channels)` th of channels will be multiplied.
 - Threshold above or equal to 1 means top threshold th of channels will be multiplied.
+
+Note that even for same key, number of channels may vary. e.g. clip_l and clip_g has different number of channels. (768 and 2048 respectively)
