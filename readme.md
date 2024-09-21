@@ -16,6 +16,7 @@ There are 4 types of key:
 - "q" means result of matmul(q, k) in cross attention will be multiplied by weight on every sampling step.
 - "s" is similar to "q" but applied after softmax.
 
+If you omit key, it will be interpreted as "c".
 Note that using "q", "s" requires to enable Extra Mode which makes slower because of disabling optimizations.
 
 Threshold has 3 ways of interpretations:
@@ -23,4 +24,5 @@ Threshold has 3 ways of interpretations:
 - Threshold below 1 means top `(threshold * channels)` th of channels will be multiplied.
 - Threshold above or equal to 1 means top threshold th of channels will be multiplied.
 
+If you omit threshold, it will be interpreted as 0.
 Note that even for same key, number of channels may vary. e.g. clip_l and clip_g has different number of channels. (768 and 2048 respectively)
