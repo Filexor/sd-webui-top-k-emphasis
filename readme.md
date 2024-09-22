@@ -17,6 +17,7 @@ There are 4 types of key:
 - "s" is similar to "q" but applied after softmax.
 
 If you omit key, it will be interpreted as "c".
+
 Note that using "q", "s" requires to enable Extra Mode which makes slower because of disabling optimizations.
 
 Threshold has 3 ways of interpretations:

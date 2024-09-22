@@ -134,8 +134,8 @@ class TopKEmphasis(modules.scripts.Script):
         if not active: return
         TopKEmphasis.extra_mode = extra_mode
         pm = prompt_parser.reconstruct_multi_multiplier_batch(TopKEmphasis.positive_multiplier, p.steps)
-        nm = prompt_parser.reconstruct_multiplier_batch(TopKEmphasis.negative_multiplier, p.steps)
-        d = len(pm) - len(nm)
+        nm = prompt_parser.reconstruct_multiplier_batch(TopKEmphasis.negative_multiplier, p.steps) if TopKEmphasis.negative_multiplier is not None else None
+        d = len(pm) - len(nm) if nm is not None else 0
         if d > 0:
             nm += [EmphasisPair()] * d
         elif d < 0:
@@ -210,7 +210,7 @@ def setup_conds(self: StableDiffusionProcessing):
     self.firstpass_steps = total_steps
 
     if self.cfg_scale == 1:
-        uc, um = None
+        uc, um = None, None
         print('Skipping unconditional conditioning when CFG = 1. Negative Prompts are ignored.')
     else:
         uc, um = self.get_conds_with_caching(prompt_parser.get_learned_conditioning, negative_prompts, total_steps, [self.cached_uc], self.extra_network_data)
@@ -236,35 +236,41 @@ def to_structure_of_tensor(positive: list[EmphasisPair], negative: list[Emphasis
         count = max(count, count_tokenwise)
         weights_p.append(weight)
         thresholds_p.append(threshold)
-    for i in negative:
-        weight = []
-        threshold = []
-        count_tokenwise = 0
-        for j in i.multipliers:
-            if j.key == key:
-                count_tokenwise += 1
-                weight.append(j.weight)
-                threshold.append(j.threshold)
-        count = max(count, count_tokenwise)
-        weights_n.append(weight)
-        thresholds_n.append(threshold)
+    if negative is not None:
+        for i in negative:
+            weight = []
+            threshold = []
+            count_tokenwise = 0
+            for j in i.multipliers:
+                if j.key == key:
+                    count_tokenwise += 1
+                    weight.append(j.weight)
+                    threshold.append(j.threshold)
+            count = max(count, count_tokenwise)
+            weights_n.append(weight)
+            thresholds_n.append(threshold)
     for i in weights_p:
         i += [1.0] * (count - len(i))
     for i in thresholds_p:
         i += [0.0] * (count - len(i))
-    for i in weights_n:
-        i += [1.0] * (count - len(i))
-    for i in thresholds_n:
-        i += [0.0] * (count - len(i))
+    if negative is not None:
+        for i in weights_n:
+            i += [1.0] * (count - len(i))
+        for i in thresholds_n:
+            i += [0.0] * (count - len(i))
     weight_p = torch.asarray(weights_p)
     weight_p = einops.rearrange(weight_p, "a b -> b a")
     threshold_p = torch.asarray(thresholds_p)
     threshold_p = einops.rearrange(threshold_p, "a b -> b a")
-    weight_n = torch.asarray(weights_n)
-    weight_n = einops.rearrange(weight_n, "a b -> b a")
-    threshold_n = torch.asarray(thresholds_n)
-    threshold_n = einops.rearrange(threshold_n, "a b -> b a")
-    return torch.stack((weight_n, weight_p), dim=1), torch.stack((threshold_n, threshold_p), dim=1)
+    if negative is not None:
+        weight_n = torch.asarray(weights_n)
+        weight_n = einops.rearrange(weight_n, "a b -> b a")
+        threshold_n = torch.asarray(thresholds_n)
+        threshold_n = einops.rearrange(threshold_n, "a b -> b a")
+    if negative is not None:
+        return torch.stack((weight_n, weight_p), dim=1), torch.stack((threshold_n, threshold_p), dim=1)
+    else:
+        return torch.stack((weight_p, ), dim=1), torch.stack((threshold_p, ), dim=1)
 
 def hook_forward(top_k_emphasis: TopKEmphasis, self):
     FORCE_UPCAST_ATTENTION_DTYPE = memory_management.force_upcast_attention_dtype()
