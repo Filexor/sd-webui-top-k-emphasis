@@ -304,9 +304,9 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         threshold = threshold.to(dtype=torch.int32)
         threshold = einops.rearrange(threshold, "a b e -> a (b e)").to(device)
         multiplier = einops.rearrange(multiplier, "a b e -> a (b e)").to(device)
-        z_dec = einops.rearrange(z, "a c d -> d (a c)").sort(dim=0, descending=True).values
         z = einops.rearrange(z, "a c d -> d (a c)")
         for i in range(threshold.shape[0]):
+            z_dec = z.sort(dim=0, descending=True).values
             selected_z_dec = z_dec.index_select(dim=0, index=threshold[i, :]).diag()
             expanded_z_dec = selected_z_dec.unsqueeze(0).expand(z.shape[0], -1)
             expanded_multiplier = multiplier[i, :].unsqueeze(0).expand(z.shape[0], -1)
@@ -322,7 +322,6 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             multiplier = TopKEmphasis.current_step_s_mul
             threshold = TopKEmphasis.current_step_s_thres   # [depth, c/uc, token]
         token_count = multiplier.shape[-1]
-        z_dec = einops.rearrange(z, "(a b) c d -> (b c) (a d)", b=heads).sort(dim=0, descending=True).values
         z = einops.rearrange(z, "(a b) c d -> (b c) (a d)", b=heads)
         threshold = torch.where(threshold == 0.0, z.shape[0], threshold)
         threshold = torch.where(threshold < 1.0, threshold * z.shape[0], threshold)
@@ -333,6 +332,7 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         threshold = einops.rearrange(threshold, "a b e -> a (b e)")
         multiplier = einops.rearrange(multiplier, "a b e -> a (b e)")
         for i in range(threshold.shape[0]):
+            z_dec = z.sort(dim=0, descending=True).values
             selected_z_dec = z_dec.index_select(dim=0, index=threshold[i, :]).diag()
             expanded_z_dec = selected_z_dec.unsqueeze(0).expand(z.shape[0], -1)
             expanded_multiplier = multiplier[i, :].unsqueeze(0).expand(z.shape[0], -1)
