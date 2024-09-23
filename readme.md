@@ -27,3 +27,13 @@ Threshold has 3 ways of interpretations:
 
 If you omit threshold, it will be interpreted as 0.
 Note that even for same key, number of channels may vary. e.g. clip_l and clip_g has different number of channels. (768 and 2048 respectively)
+## Notes
+### Tipical number of channels
+- "c": 768 for clip_l and 2048 for clip_g
+- "k": out_features of to_k (for SDXL: 640 or 1280)
+- "v": out_features of to_v (for SDXL: 640 or 1280)
+- "q": For SDXL, for IN04, IN05, OUT03, OUT04, OUT05: `ceil(width_in_px/16)*ceil(height_in_px/16)*number_of_heads` where number_of_heads is 10.
+If image size is 1920x1080, number of channels will be 81600.
+For IN07, IN08, M00, OUT00, OUT01, OUT02: `ceil(width_in_px/32)*ceil(height_in_px/32)*number_of_heads` where number_of_heads is 20.
+If image size is 1920x1080, number of channels will  be 40800.
+- "s": Same as "q".
