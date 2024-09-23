@@ -12,16 +12,12 @@ last_extra_generation_params = {}
 class ClassicTextProcessingEngineTopKEmphasis:
     def __init__(
             self, text_encoder, tokenizer, chunk_length=75,
-            embedding_dir=None, embedding_key='clip_l', embedding_expected_shape=768, emphasis_name="Original",
+            embeddings=None, embedding_key='clip_l', token_embedding=None, emphasis_name="Original",
             text_projection=False, minimal_clip_skip=1, clip_skip=1, return_pooled=False, final_layer_norm=True
     ):
         super().__init__()
 
-        self.embeddings = EmbeddingDatabase(tokenizer, embedding_expected_shape)
-
-        if isinstance(embedding_dir, str):
-            self.embeddings.add_embedding_dir(embedding_dir)
-            self.embeddings.load_textual_inversion_embeddings()
+        self.embeddings = embeddings
 
         self.embedding_key = embedding_key
 
@@ -42,7 +38,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
         self.id_pad = self.tokenizer.pad_token_id
 
         model_embeddings = text_encoder.transformer.text_model.embeddings
-        model_embeddings.token_embedding = CLIPEmbeddingForTextualInversion(model_embeddings.token_embedding, self.embeddings, textual_inversion_key=embedding_key)
+        model_embeddings.token_embedding = token_embedding
 
         vocab = self.tokenizer.get_vocab()
 
