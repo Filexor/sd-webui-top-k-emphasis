@@ -1,9 +1,6 @@
-from calendar import c
 from copy import deepcopy
-import re
 
 import lark
-from numpy import isin
 
 rules=r"""
 start: break1
@@ -112,8 +109,7 @@ def apply_multiplier(input: list, multipliers: list[Multiplier]):
     else:
         raise Exception('Unexpected type given.', str(input[0]))
 
-def parse_prompt_attention(text):
-    emphasis_pairs: list[EmphasisPair] = []
+def parse_prompt_attention(text) -> list[EmphasisPair]:
     root = lark_rules.parse(text)
     print(root.pretty())
 
