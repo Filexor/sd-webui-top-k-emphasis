@@ -1,7 +1,7 @@
 import math
 import torch
 
-from backend.text_processing.classic_engine import CLIPEmbeddingForTextualInversion, PromptChunk, PromptChunkFix
+from backend.text_processing.classic_engine import CLIPEmbeddingForTextualInversion, PromptChunkFix
 from backend.text_processing.textual_inversion import EmbeddingDatabase
 from backend import memory_management
 
@@ -9,12 +9,20 @@ from scripts import emphasis, parsing
 
 last_extra_generation_params = {}
 
+class PromptChunk:
+    def __init__(self):
+        self.tokens = []
+        self.multipliers: list[parsing.EmphasisPair] = []
+        self.fixes = []
+
 class ClassicTextProcessingEngineTopKEmphasis:
     def __init__(
             self, text_encoder, tokenizer, chunk_length=75,
-            embeddings=None, embedding_key='clip_l', token_embedding=None, emphasis_name="Original",
-            text_projection=False, minimal_clip_skip=1, clip_skip=1, return_pooled=False, final_layer_norm=True
+            embeddings=None, embedding_key='clip_l', token_embedding=None, emphasis_view_update=False,
+            text_projection=False, minimal_clip_skip=1, clip_skip=1, return_pooled=False, final_layer_norm=True,
+            manual_mode=False, debug=False, 
     ):
+        """manuak_mode: You will have to add "<|startoftext|>" at beginnning of pormpt."""
         super().__init__()
 
         self.embeddings = embeddings
@@ -24,7 +32,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
 
-        self.emphasis = emphasis.TopKEmphasis()
+        self.emphasis = emphasis.TopKEmphasis(emphasis_view_update, debug)
         self.text_projection = text_projection
         self.minimal_clip_skip = minimal_clip_skip
         self.clip_skip = clip_skip
@@ -61,6 +69,10 @@ class ClassicTextProcessingEngineTopKEmphasis:
 
             if mult != 1.0:
                 self.token_mults[ident] = mult
+
+        self.manual_mode = manual_mode
+        self.emphasis_view_update = emphasis_view_update
+        self.debug = debug
 
     def empty_chunk(self):
         chunk = PromptChunk()
@@ -122,22 +134,20 @@ class ClassicTextProcessingEngineTopKEmphasis:
             if is_last:
                 token_count += len(chunk.tokens)
             else:
-                token_count += self.chunk_length
+                token_count += self.chunk_length if not self.manual_mode else self.chunk_length + 2
 
-            to_add = self.chunk_length - len(chunk.tokens)
+            to_add = (self.chunk_length - len(chunk.tokens)) if not self.manual_mode else self.chunk_length + 2 - len(chunk.tokens) 
             if to_add > 0:
                 chunk.tokens += [self.id_end] * to_add
-                chunk.multipliers += [parsing.EmphasisPair()] * to_add
 
-            chunk.tokens = [self.id_start] + chunk.tokens + [self.id_end]
-            chunk.multipliers = [parsing.EmphasisPair()] + chunk.multipliers + [parsing.EmphasisPair()]
+            chunk.tokens = ([self.id_start] + chunk.tokens + [self.id_end]) if not self.manual_mode else chunk.tokens
 
             last_comma = -1
             chunks.append(chunk)
             chunk = PromptChunk()
 
         for tokens, weight in zip(tokenized, parsed):
-            if weight.text == 'BREAK':
+            if isinstance(weight, parsing.BREAK_Object):
                 next_chunk()
                 continue
 
@@ -150,38 +160,46 @@ class ClassicTextProcessingEngineTopKEmphasis:
                 if token == self.comma_token:
                     last_comma = len(chunk.tokens)
 
-                elif comma_padding_backtrack != 0 and len(chunk.tokens) == self.chunk_length and last_comma != -1 and len(chunk.tokens) - last_comma <= comma_padding_backtrack:
+                elif comma_padding_backtrack != 0 and len(chunk.tokens) == (self.chunk_length if not self.manual_mode else self.chunk_length + 2) and last_comma != -1 and len(chunk.tokens) - last_comma <= comma_padding_backtrack:
                     break_location = last_comma + 1
+                    break_length = (self.chunk_length if not self.manual_mode else self.chunk_length + 2) - break_location
 
                     reloc_tokens = chunk.tokens[break_location:]
-                    reloc_mults = chunk.multipliers[break_location:]
-
                     chunk.tokens = chunk.tokens[:break_location]
-                    chunk.multipliers = chunk.multipliers[:break_location]
+
+                    reloc_weights = [weight for weight in chunk.multipliers if weight.begin >= break_location]
+                    for weight in reloc_weights:
+                        weight.begin += break_length
+                        weight.end += break_length
 
                     next_chunk()
                     chunk.tokens = reloc_tokens
-                    chunk.multipliers = reloc_mults
 
-                if len(chunk.tokens) == self.chunk_length:
+                if len(chunk.tokens) == (self.chunk_length if not self.manual_mode else self.chunk_length + 2):
                     next_chunk()
 
                 embedding, embedding_length_in_tokens = self.embeddings.find_embedding_at_position(tokens, position)
                 if embedding is None:
+                    if position == 0:
+                        weight.begin = len(chunk.tokens)
                     chunk.tokens.append(token)
-                    chunk.multipliers.append(weight)
                     position += 1
+                    if position == len(tokens):
+                        weight.end = len(chunk.tokens)
+                        chunk.multipliers.append(weight)
                     continue
 
                 emb_len = int(embedding.vectors)
-                if len(chunk.tokens) + emb_len > self.chunk_length:
+                if len(chunk.tokens) + emb_len > (self.chunk_length if not self.manual_mode else self.chunk_length + 2):
                     next_chunk()
 
                 chunk.fixes.append(PromptChunkFix(len(chunk.tokens), embedding))
 
+                weight.begin = len(chunk.tokens)
                 chunk.tokens += [0] * emb_len
-                chunk.multipliers += [weight] * emb_len
+                weight.end = len(chunk.tokens)
                 position += embedding_length_in_tokens
+                chunk.multipliers.append(weight)
 
         if chunk.tokens or not chunks:
             next_chunk(is_last=True)

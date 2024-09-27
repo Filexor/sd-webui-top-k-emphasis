@@ -38,6 +38,8 @@ class EmphasisPair():
     def __init__(self, text: str = "", multipliers: list[Multiplier] = []) -> None:
         self.text = deepcopy(text)
         self.multipliers = deepcopy(multipliers)
+        self.begin = None
+        self.end = None
 
     def __iter__(self):
         return EmphasisPairIterator(self)
@@ -67,6 +69,7 @@ class EmphasisPairIterator():
             
 class BREAK_Object():
     def __init__(self) -> None:
+        """BREAK is never appear in conditioning so location is not needed."""
         self.text = "BREAK"
         self.multipliers = []
 
@@ -109,13 +112,17 @@ def apply_multiplier(input: list, multipliers: list[Multiplier]):
     else:
         raise Exception('Unexpected type given.', str(input[0]))
 
-def parse_prompt_attention(text) -> list[EmphasisPair]:
+def parse_prompt_attention(text) -> list[EmphasisPair|BREAK_Object]:
     root = lark_rules.parse(text)
-    print(root.pretty())
+    #print(root.pretty())
 
     class Preprocess(lark.visitors.Transformer):
-        def start(self, children: list[EmphasisPair|BREAK_Object|list]):
-            if isinstance(children[0], (EmphasisPair, BREAK_Object)):
+        def start(self, children: list[EmphasisPair|BREAK_Object|list]|None):
+            if children is None:
+                return [EmphasisPair()]
+            elif len(children) == 0:
+                return [EmphasisPair()]
+            elif isinstance(children[0], (EmphasisPair, BREAK_Object)):
                 return [children[0]]
             elif isinstance(children[0], list):
                 return children[0]

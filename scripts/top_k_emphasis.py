@@ -1,3 +1,4 @@
+from math import e
 import gradio
 from regex import W
 import torch
@@ -39,14 +40,8 @@ class TopKEmphasis(modules.scripts.Script):
     get_learned_conditioning_sdxl_original = None
     positive_multiplier = None
     negative_multiplier = None
-    current_step_q_mul = None
-    current_step_q_thres = None
-    current_step_k_mul = None
-    current_step_k_thres = None
-    current_step_v_mul = None
-    current_step_v_thres = None
-    current_step_s_mul = None
-    current_step_s_thres = None
+    reconstructed_positive_multiplier = None
+    reconstructed_negative_multiplier = None
 
     def __init__(self) -> None:
         super().__init__()
@@ -62,9 +57,14 @@ class TopKEmphasis(modules.scripts.Script):
             with gradio.Row():
                 active = gradio.Checkbox(value=False, label="Enable Top K Emphasis")
                 extra_mode = gradio.Checkbox(value=False, label="Enbale Extra Mode")
-        return [active, extra_mode]
+            with gradio.Row():
+                manual_mode = gradio.Checkbox(value=False, label="Disallow to automatically add start token")
+                emphasis_view_update = gradio.Checkbox(value=False, label="Update view on every emphasis")
+            with gradio.Row():
+                debug = gradio.Checkbox(value=False, label="Debug mode")
+        return [active, extra_mode, manual_mode, emphasis_view_update, debug]
     
-    def before_process(self, p: StableDiffusionProcessing, active, *args, **kwargs):
+    def before_process(self, p: StableDiffusionProcessing, active, extra_mode, manual_mode, emphasis_view_update, debug, *args, **kwargs):
         if not active: return
         print("Loading Top K Emphasis.")
         if hasattr(p.sd_model, "text_processing_engine"):
@@ -77,12 +77,14 @@ class TopKEmphasis(modules.scripts.Script):
                     embeddings=p.sd_model.text_processing_engine.embeddings,
                     embedding_key='clip_l',
                     token_embedding=p.sd_model.text_processing_engine.text_encoder.transformer.text_model.embeddings.token_embedding,
-                    emphasis_name=dynamic_args['emphasis_name'],
                     text_projection=False,
                     minimal_clip_skip=1,
                     clip_skip=1,
                     return_pooled=False,
                     final_layer_norm=True,
+                    manual_mode=manual_mode,
+                    emphasis_view_update=emphasis_view_update,
+                    debug=debug,
                 )
             hook_forwards(TopKEmphasis, p.sd_model.forge_objects.unet.model, False)
         elif hasattr(p.sd_model, "text_processing_engine_l") and hasattr(p.sd_model, "text_processing_engine_g"):
@@ -95,12 +97,14 @@ class TopKEmphasis(modules.scripts.Script):
                     embeddings=p.sd_model.text_processing_engine_l.embeddings,
                     embedding_key='clip_l',
                     token_embedding=p.sd_model.text_processing_engine_l.text_encoder.transformer.text_model.embeddings.token_embedding,
-                    emphasis_name=dynamic_args['emphasis_name'],
                     text_projection=False,
                     minimal_clip_skip=2,
                     clip_skip=2,
                     return_pooled=False,
                     final_layer_norm=False,
+                    manual_mode=manual_mode,
+                    emphasis_view_update=emphasis_view_update,
+                    debug=debug,
                 )
             TopKEmphasis.text_processing_engine_g_original = p.sd_model.text_processing_engine_g
             if not isinstance(p.sd_model.text_processing_engine_g, ClassicTextProcessingEngineTopKEmphasis):
@@ -110,12 +114,14 @@ class TopKEmphasis(modules.scripts.Script):
                     embeddings=p.sd_model.text_processing_engine_g.embeddings,
                     embedding_key='clip_g',
                     token_embedding=p.sd_model.text_processing_engine_g.text_encoder.transformer.text_model.embeddings.token_embedding,
-                    emphasis_name=dynamic_args['emphasis_name'],
                     text_projection=True,
                     minimal_clip_skip=2,
                     clip_skip=2,
                     return_pooled=True,
                     final_layer_norm=False,
+                    manual_mode=manual_mode,
+                    emphasis_view_update=emphasis_view_update,
+                    debug=debug,
                 )
             TopKEmphasis.get_learned_conditioning_sdxl_original = p.sd_model.get_learned_conditioning
             p.sd_model.get_learned_conditioning = get_learned_conditioning_sdxl
@@ -133,17 +139,8 @@ class TopKEmphasis(modules.scripts.Script):
     def process_before_every_sampling(self, p: StableDiffusionProcessing, active, extra_mode, *args, **kwargs):
         if not active: return
         TopKEmphasis.extra_mode = extra_mode
-        pm = prompt_parser.reconstruct_multi_multiplier_batch(TopKEmphasis.positive_multiplier, p.steps)
-        nm = prompt_parser.reconstruct_multiplier_batch(TopKEmphasis.negative_multiplier, p.steps) if TopKEmphasis.negative_multiplier is not None else None
-        d = len(pm) - len(nm) if nm is not None else 0
-        if d > 0:
-            nm += [EmphasisPair()] * d
-        elif d < 0:
-            pm += [EmphasisPair()] * -d
-        TopKEmphasis.current_step_q_mul, TopKEmphasis.current_step_q_thres = to_structure_of_tensor(pm, nm, "q")
-        TopKEmphasis.current_step_k_mul, TopKEmphasis.current_step_k_thres = to_structure_of_tensor(pm, nm, "k")
-        TopKEmphasis.current_step_v_mul, TopKEmphasis.current_step_v_thres = to_structure_of_tensor(pm, nm, "v")
-        TopKEmphasis.current_step_s_mul, TopKEmphasis.current_step_s_thres = to_structure_of_tensor(pm, nm, "s")
+        TopKEmphasis.reconstructed_positive_multiplier = prompt_parser.reconstruct_multi_multiplier_batch(TopKEmphasis.positive_multiplier, p.steps)
+        TopKEmphasis.reconstructed_negative_multiplier = prompt_parser.reconstruct_multiplier_batch(TopKEmphasis.negative_multiplier, p.steps) if TopKEmphasis.negative_multiplier is not None else None
 
     def postprocess(self, p: StableDiffusionProcessing, processed, active, *args):
         if not active: return
@@ -404,14 +401,14 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         q = self.to_q(x)
         context = default(context, x)
         k = self.to_k(context)
-        k = apply_top_k_emphasis1(k, "k")
+        #k = apply_top_k_emphasis1(k, "k")
         if value is not None:
             v = self.to_v(value)
-            v = apply_top_k_emphasis1(v, "v")
+            #v = apply_top_k_emphasis1(v, "v")
             del value
         else:
             v = self.to_v(context)
-            v = apply_top_k_emphasis1(v, "v")
+            #v = apply_top_k_emphasis1(v, "v")
         if TopKEmphasis.extra_mode:
             out = cross_attension(q, k, v, self.heads, mask, transformer_options=transformer_options)
         else:
