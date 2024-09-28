@@ -409,7 +409,7 @@ def reconstruct_multiplier_batch(c: list[list[ScheduledPromptConditioning]], cur
                     l.begin += chunk_count * 77
                     l.end += chunk_count * 77
                     flattened.append(l)
-                    chunk_count += 1
+                chunk_count += 1
         flattened_batch.append(flattened)
 
     return flattened_batch
@@ -443,8 +443,16 @@ def reconstruct_multi_multiplier_batch(c: MulticondLearnedConditioning, current_
                         m.begin += chunk_count * 77
                         m.end += chunk_count * 77
                         flattened.append(m)
-                        chunk_count += 1
+                    chunk_count += 1
             flattened_and.append(flattened)
+        flattened_and.reverse()
         flattened_batch.append(flattened_and)
 
-    return flattened_batch
+    transposed = list(map(list, zip(*flattened_batch)))
+
+    result = []
+    for i in transposed:
+        for j in i:
+            result.append(j)
+
+    return result

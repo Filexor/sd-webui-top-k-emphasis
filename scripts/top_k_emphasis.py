@@ -14,6 +14,7 @@ from backend import memory_management
 from backend.args import args, dynamic_args
 from backend.attention import attention_function
 
+from scripts import emphasis
 from scripts.classic_engine import ClassicTextProcessingEngineTopKEmphasis
 from scripts.parsing import EmphasisPair
 import scripts.prompt_parser as prompt_parser
@@ -43,6 +44,8 @@ class TopKEmphasis(modules.scripts.Script):
     reconstructed_positive_multiplier = None
     reconstructed_negative_multiplier = None
     crossattentioncounter = 0
+    emphasis_view_update = False
+    debug = False
 
     def __init__(self) -> None:
         super().__init__()
@@ -88,6 +91,8 @@ class TopKEmphasis(modules.scripts.Script):
                     debug=debug,
                 )
             hook_forwards(p.sd_model.forge_objects.unet.model, False)
+            TopKEmphasis.emphasis_view_update = emphasis_view_update
+            TopKEmphasis.debug = debug
         elif hasattr(p.sd_model, "text_processing_engine_l") and hasattr(p.sd_model, "text_processing_engine_g"):
             TopKEmphasis.model_type = "SDXL"
             TopKEmphasis.text_processing_engine_l_original = p.sd_model.text_processing_engine_l
@@ -127,6 +132,8 @@ class TopKEmphasis(modules.scripts.Script):
             TopKEmphasis.get_learned_conditioning_sdxl_original = p.sd_model.get_learned_conditioning
             p.sd_model.get_learned_conditioning = get_learned_conditioning_sdxl
             hook_forwards(p.sd_model.forge_objects.unet.model, False)
+            TopKEmphasis.emphasis_view_update = emphasis_view_update
+            TopKEmphasis.debug = debug
         else:
             raise Exception("Unsupported model type.")
 
@@ -372,7 +379,10 @@ def hook_forward(self):
             sim = torch.einsum('b i d, b j d -> b i j', q, k) * scale
 
         del q, k
-        sim = apply_top_k_emphasis2(sim, "q", heads)
+        sim = einops.rearrange(sim, "(i h) l t -> i t (h l)", h=heads)
+        sim = emphasis.emphasis_crossattention(sim, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "q", 
+                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+        sim = einops.rearrange(sim, "i t (h l) -> (i h) l t", h=heads)
 
         if exists(mask):
             if mask.dtype == torch.bool:
@@ -389,7 +399,10 @@ def hook_forward(self):
                 sim.add_(mask)
 
         sim = sim.softmax(dim=-1)
-        sim = apply_top_k_emphasis2(sim, "s", heads)
+        sim = einops.rearrange(sim, "(i h) l t -> i t (h l)", h=heads)
+        sim = emphasis.emphasis_crossattention(sim, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "s", 
+                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+        sim = einops.rearrange(sim, "i t (h l) -> (i h) l t", h=heads)
         out = torch.einsum('b i j, b j d -> b i d', sim.to(v.dtype), v)
         out = (
             out.unsqueeze(0)
@@ -399,7 +412,7 @@ def hook_forward(self):
         )
         return out
     
-    def forward(x, context=None, value=None, mask=None, transformer_options={}):
+    def forward(x, context: torch.Tensor=None, value=None, mask=None, transformer_options={}):
         # context is ordered in (uncond_batch0, uncond_batch1, ..., cond_batch0_and-1, cond_batch1_and-1, ..., cond_batch0_and-2, ...) .
         # if no uncond, context is ordered in (cond_batch0_and-1, cond_batch1_and-1, ..., cond_batch0_and-2, ...) .
         # batch_size is z.shape[0] / (len(uncond_indices) + len(cond_indicies))
@@ -412,15 +425,27 @@ def hook_forward(self):
         # [..., 74, 75, 76, 76, 76, 76, ...]]
         q = self.to_q(x)
         context = default(context, x)
-        k = self.to_k(context)
-        #k = apply_top_k_emphasis1(k, "k")
+        context_k = emphasis.emphasis_crossattention(context.clone(), TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "pk", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+        k = self.to_k(context_k)
+        del context_k
+        k = emphasis.emphasis_crossattention(k, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "k", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         if value is not None:
-            v = self.to_v(value)
-            #v = apply_top_k_emphasis1(v, "v")
+            value_v = emphasis.emphasis_crossattention(value.clone(), TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "pv", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+            v = self.to_v(value_v)
+            del value_v
+            v = emphasis.emphasis_crossattention(v, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "v", 
+                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
             del value
         else:
-            v = self.to_v(context)
-            #v = apply_top_k_emphasis1(v, "v")
+            context_v = emphasis.emphasis_crossattention(context.clone(), TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "pv", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+            v = self.to_v(context_v)
+            del context_v
+            v = emphasis.emphasis_crossattention(v, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "v", 
+                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         if TopKEmphasis.extra_mode:
             out = cross_attension(q, k, v, self.heads, mask, transformer_options=transformer_options)
         else:

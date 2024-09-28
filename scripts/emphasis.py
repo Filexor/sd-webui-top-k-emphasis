@@ -1073,7 +1073,8 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z[i, pair.begin:pair.end, thres_top:thres_bottom] += postoffset
     return z
 
-def emphasis_k_v(z, multipliers, emphasis_view_update, key, debug):
+def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[EmphasisPair]], multipliers_neg: list[list[EmphasisPair]], key: str, crossattentioncounter, emphasis_view_update, debug):
+    multipliers = multipliers_neg + multipliers_pos
     if emphasis_view_update:
         for i, pairs in enumerate(multipliers):
             for pair in pairs:
@@ -1083,6 +1084,7 @@ def emphasis_k_v(z, multipliers, emphasis_view_update, key, debug):
                         value = None
                         preoffset = 0.0
                         postoffset = 0.0
+                        crossattentioncountertargets = []
                         for option in multiplier.options:
                             match option[0]:
                                 case "b" | "o" | "m" | "r":
@@ -1100,10 +1102,8 @@ def emphasis_k_v(z, multipliers, emphasis_view_update, key, debug):
                                         else:
                                             value = multiplier.threshold + 1
                                 case "n":
-                                    pass    # This is not cross attention.
-                                    # if mode is None and option[1] is not None:
-                                    #     mode = option[0]
-                                    #     value = option[1]
+                                    if option[1] is not None:
+                                        crossattentioncountertargets.append(int(option[1]))
                                 case "pa":
                                     if option[1] is not None:
                                         preoffset += option[1]
@@ -1116,6 +1116,8 @@ def emphasis_k_v(z, multipliers, emphasis_view_update, key, debug):
                                 case "s":
                                     if option[1] is not None:
                                         postoffset -= option[1]
+                        if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
+                            break
                         weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
                         preoffset = torch.asarray([preoffset], dtype=torch.float32, device=z.device)
                         postoffset = torch.asarray([postoffset], dtype=torch.float32, device=z.device)
@@ -1325,11 +1327,12 @@ def emphasis_k_v(z, multipliers, emphasis_view_update, key, debug):
                 z_des = z[i, pair.begin:pair.end, :].sort(dim=-1, descending=True).values
                 z_asc = z_des.flip([-1])
                 for multiplier in pair.multipliers:
-                    if multiplier.key == "bc" or (multiplier.key == "bl" and embedding_key == "clip_l") or (multiplier.key == "bg" and embedding_key == "clip_g"):
+                    if multiplier.key == key:
                         mode = None
                         value = None
                         preoffset = 0.0
                         postoffset = 0.0
+                        crossattentioncountertargets = []
                         for option in multiplier.options:
                             match option[0]:
                                 case "b" | "o" | "m" | "r":
@@ -1347,10 +1350,8 @@ def emphasis_k_v(z, multipliers, emphasis_view_update, key, debug):
                                         else:
                                             value = multiplier.threshold + 1
                                 case "n":
-                                    pass    # This is not cross attention.
-                                    # if mode is None and option[1] is not None:
-                                    #     mode = option[0]
-                                    #     value = option[1]
+                                    if option[1] is not None:
+                                        crossattentioncountertargets.append(int(option[1]))
                                 case "pa":
                                     if option[1] is not None:
                                         preoffset += option[1]
@@ -1363,6 +1364,8 @@ def emphasis_k_v(z, multipliers, emphasis_view_update, key, debug):
                                 case "s":
                                     if option[1] is not None:
                                         postoffset -= option[1]
+                        if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
+                            break
                         weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
                         preoffset = torch.asarray([preoffset], dtype=torch.float32, device=z.device)
                         postoffset = torch.asarray([postoffset], dtype=torch.float32, device=z.device)
@@ -1567,3 +1570,4 @@ def emphasis_k_v(z, multipliers, emphasis_view_update, key, debug):
                                 z[i, pair.begin:pair.end, thres_top:thres_bottom] *= weight
                                 z[i, pair.begin:pair.end, thres_top:thres_bottom] += postoffset
     return z
+
