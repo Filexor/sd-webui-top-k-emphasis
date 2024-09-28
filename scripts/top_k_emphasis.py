@@ -42,6 +42,7 @@ class TopKEmphasis(modules.scripts.Script):
     negative_multiplier = None
     reconstructed_positive_multiplier = None
     reconstructed_negative_multiplier = None
+    crossattentioncounter = 0
 
     def __init__(self) -> None:
         super().__init__()
@@ -86,7 +87,7 @@ class TopKEmphasis(modules.scripts.Script):
                     emphasis_view_update=emphasis_view_update,
                     debug=debug,
                 )
-            hook_forwards(TopKEmphasis, p.sd_model.forge_objects.unet.model, False)
+            hook_forwards(p.sd_model.forge_objects.unet.model, False)
         elif hasattr(p.sd_model, "text_processing_engine_l") and hasattr(p.sd_model, "text_processing_engine_g"):
             TopKEmphasis.model_type = "SDXL"
             TopKEmphasis.text_processing_engine_l_original = p.sd_model.text_processing_engine_l
@@ -125,7 +126,7 @@ class TopKEmphasis(modules.scripts.Script):
                 )
             TopKEmphasis.get_learned_conditioning_sdxl_original = p.sd_model.get_learned_conditioning
             p.sd_model.get_learned_conditioning = get_learned_conditioning_sdxl
-            hook_forwards(TopKEmphasis, p.sd_model.forge_objects.unet.model, False)
+            hook_forwards(p.sd_model.forge_objects.unet.model, False)
         else:
             raise Exception("Unsupported model type.")
 
@@ -141,6 +142,7 @@ class TopKEmphasis(modules.scripts.Script):
         TopKEmphasis.extra_mode = extra_mode
         TopKEmphasis.reconstructed_positive_multiplier = prompt_parser.reconstruct_multi_multiplier_batch(TopKEmphasis.positive_multiplier, p.steps)
         TopKEmphasis.reconstructed_negative_multiplier = prompt_parser.reconstruct_multiplier_batch(TopKEmphasis.negative_multiplier, p.steps) if TopKEmphasis.negative_multiplier is not None else None
+        TopKEmphasis.crossattentioncounter = 0
 
     def postprocess(self, p: StableDiffusionProcessing, processed, active, *args):
         if not active: return
@@ -148,7 +150,7 @@ class TopKEmphasis(modules.scripts.Script):
             case "SD1.5":
                 if TopKEmphasis.text_processing_engine_original is not None:
                     p.sd_model.text_processing_engine = TopKEmphasis.text_processing_engine_original
-                hook_forwards(TopKEmphasis, p.sd_model.forge_objects.unet.model, True)
+                hook_forwards(p.sd_model.forge_objects.unet.model, True)
             case "SDXL":
                 if TopKEmphasis.text_processing_engine_l_original is not None:
                     p.sd_model.text_processing_engine_l = TopKEmphasis.text_processing_engine_l_original
@@ -156,7 +158,7 @@ class TopKEmphasis(modules.scripts.Script):
                     p.sd_model.text_processing_engine_g = TopKEmphasis.text_processing_engine_g_original
                 if TopKEmphasis.get_learned_conditioning_sdxl_original is not None:
                     p.sd_model.get_learned_conditioning = TopKEmphasis.get_learned_conditioning_sdxl_original
-                hook_forwards(TopKEmphasis, p.sd_model.forge_objects.unet.model, True)
+                hook_forwards(p.sd_model.forge_objects.unet.model, True)
         print("Unloading Top K Emphasis.")
 
 @torch.inference_mode()
@@ -269,7 +271,7 @@ def to_structure_of_tensor(positive: list[EmphasisPair], negative: list[Emphasis
     else:
         return torch.stack((weight_p, ), dim=1), torch.stack((threshold_p, ), dim=1)
 
-def hook_forward(top_k_emphasis: TopKEmphasis, self):
+def hook_forward(self):
     FORCE_UPCAST_ATTENTION_DTYPE = memory_management.force_upcast_attention_dtype()
 
     def get_attn_precision(attn_precision=torch.float32):
@@ -398,6 +400,16 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         return out
     
     def forward(x, context=None, value=None, mask=None, transformer_options={}):
+        # context is ordered in (uncond_batch0, uncond_batch1, ..., cond_batch0_and-1, cond_batch1_and-1, ..., cond_batch0_and-2, ...) .
+        # if no uncond, context is ordered in (cond_batch0_and-1, cond_batch1_and-1, ..., cond_batch0_and-2, ...) .
+        # batch_size is z.shape[0] / (len(uncond_indices) + len(cond_indicies))
+        # check uncond_indices and cond_indicies in transformer_options .
+        # context = "(uncond_cond batch) token channel"
+        # k = "(uncond_cond batch) token channel"
+        # note that uncond_cond can be non-rectangular.
+        # if size of tokens is not uniform, last token of short tensor will be broadcasted. i do not care such case.
+        #[[..., 74, 75, 76, 77, 78, 79, ...],
+        # [..., 74, 75, 76, 76, 76, 76, ...]]
         q = self.to_q(x)
         context = default(context, x)
         k = self.to_k(context)
@@ -413,12 +425,13 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             out = cross_attension(q, k, v, self.heads, mask, transformer_options=transformer_options)
         else:
             out = attention_function(q, k, v, self.heads, mask)
+        TopKEmphasis.crossattentioncounter += 1
         return self.to_out(out)
     return forward
 
-def hook_forwards(top_k_emphasis: TopKEmphasis, root_module: torch.nn.Module, remove=False):
+def hook_forwards(root_module: torch.nn.Module, remove=False):
     for name, module in root_module.named_modules():
         if "attn2" in name and module.__class__.__name__ == "CrossAttention":
-            module.forward = hook_forward(top_k_emphasis, module)
+            module.forward = hook_forward(module)
             if remove:
                 del module.forward

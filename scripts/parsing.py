@@ -152,6 +152,8 @@ def parse_prompt_attention(text) -> list[EmphasisPair|BREAK_Object]:
                     return [EmphasisPair(children[0])]
                 elif isinstance(children[0], list):
                     return children[0]
+                elif isinstance(children[0], EmphasisPair):
+                    return [children[0]]
                 else:
                     raise Exception('Unexpected type given.', str(children[0]))
             elif isinstance(children[1][0], BREAK_Object):

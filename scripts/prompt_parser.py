@@ -6,6 +6,8 @@ from collections import namedtuple
 import lark
 import torch
 
+from scripts.parsing import EmphasisPair
+
 # a prompt like this: "fantasy landscape with a [mountain:lake:0.25] and [an oak:a christmas tree:0.75][ in foreground::0.6][: in background:0.25] [shoddy:masterful:0.5]"
 # will be represented with prompt_schedule like this (assuming steps=100):
 # [25, 'fantasy landscape with a mountain and an oak in foreground shoddy']
@@ -185,7 +187,8 @@ def get_learned_conditioning(model, prompts: SdConditioning | list[str], steps, 
 
         cached = cache.get(prompt, None)
         if cached is not None:
-            res.append(cached)
+            res.append(cached[0])
+            res_multiplier.append(cached[1])
             continue
 
         texts = SdConditioning([x[1] for x in prompt_schedule], copy_from=prompts)
@@ -383,7 +386,8 @@ def reconstruct_multicond_batch(c: MulticondLearnedConditioning, current_step):
 
 
 def reconstruct_multiplier_batch(c: list[list[ScheduledPromptConditioning]], current_step):
-    tensors = []
+    # batch, schedule, .cond, chunk, ???, 
+    batch_multipliers = []
 
     for prompts in c:
         target_index = 0
@@ -392,23 +396,30 @@ def reconstruct_multiplier_batch(c: list[list[ScheduledPromptConditioning]], cur
                 target_index = current
                 break
 
-        tensors.append(prompts[target_index].cond)
+        batch_multipliers.append(prompts[target_index].cond)
 
-    tensors: list[list[list]]
-    flattened = []
-    for i in tensors:
+    batch_multipliers: list[list[list[EmphasisPair]]]
+    flattened_batch = []
+    for i in batch_multipliers:
+        flattened = []
+        chunk_count = 0
         for j in i:
             for k in j:
                 for l in k:
+                    l.begin += chunk_count * 77
+                    l.end += chunk_count * 77
                     flattened.append(l)
+                    chunk_count += 1
+        flattened_batch.append(flattened)
 
-    return flattened
+    return flattened_batch
 
 def reconstruct_multi_multiplier_batch(c: MulticondLearnedConditioning, current_step):
-    tensors = []
+    # .batch, batch, AND, schedule, .cond, chunk, ???, 
+    batch_multipliers = []
 
     for composable_prompts in c.batch:
-
+        multipliers = []
         for composable_prompt in composable_prompts:
             target_index = 0
             for current, entry in enumerate(composable_prompt.schedules):
@@ -416,14 +427,24 @@ def reconstruct_multi_multiplier_batch(c: MulticondLearnedConditioning, current_
                     target_index = current
                     break
 
-            tensors.append(composable_prompt.schedules[target_index].cond)
+            multipliers.append(composable_prompt.schedules[target_index].cond)
+        batch_multipliers.append(multipliers)
 
-    tensors: list[list[list]]
-    flattened = []
-    for i in tensors:
+    batch_multipliers: list[list[list[list[EmphasisPair]]]]
+    flattened_batch = []
+    for i in batch_multipliers:
+        flattened_and = []
         for j in i:
+            flattened = []
+            chunk_count = 0
             for k in j:
                 for l in k:
-                    flattened.append(l)
+                    for m in l:
+                        m.begin += chunk_count * 77
+                        m.end += chunk_count * 77
+                        flattened.append(m)
+                        chunk_count += 1
+            flattened_and.append(flattened)
+        flattened_batch.append(flattened_and)
 
-    return flattened
+    return flattened_batch

@@ -189,25 +189,27 @@ class ClassicTextProcessingEngineTopKEmphasis:
             while position < len(tokens):
                 token = tokens[position]
 
-                comma_padding_backtrack = 20
+                comma_padding_backtrack = 20 if not self.manual_mode else 21
 
                 if token == self.comma_token:
                     last_comma = len(chunk.tokens)
 
                 elif comma_padding_backtrack != 0 and len(chunk.tokens) == (self.chunk_length if not self.manual_mode else self.chunk_length + 2) and last_comma != -1 and len(chunk.tokens) - last_comma <= comma_padding_backtrack:
                     break_location = last_comma + 1
-                    break_length = (self.chunk_length if not self.manual_mode else self.chunk_length + 2) - break_location
 
                     reloc_tokens = chunk.tokens[break_location:]
                     chunk.tokens = chunk.tokens[:break_location]
 
-                    reloc_weights = [weight for weight in chunk.multipliers if weight.begin >= break_location]
-                    for weight in reloc_weights:
-                        weight.begin += break_length
-                        weight.end += break_length
+                    reloc_weights = [weight for weight in chunk.multipliers if weight.begin > break_location]
+                    chunk.multipliers = [weight for weight in chunk.multipliers if weight.begin <= break_location]
+                    for i in range(len(reloc_weights)):
+                        reloc_weights[i].begin -= break_location
+                        reloc_weights[i].end -= break_location
 
                     next_chunk()
                     chunk.tokens = reloc_tokens
+                    chunk.multipliers = reloc_weights
+                    weight.begin = 1 if not self.manual_mode else 0
 
                 if len(chunk.tokens) == (self.chunk_length if not self.manual_mode else self.chunk_length + 2):
                     next_chunk()
@@ -215,11 +217,11 @@ class ClassicTextProcessingEngineTopKEmphasis:
                 embedding, embedding_length_in_tokens = self.embeddings.find_embedding_at_position(tokens, position)
                 if embedding is None:
                     if position == 0:
-                        weight.begin = len(chunk.tokens)
+                        weight.begin = len(chunk.tokens) + 1 if not self.manual_mode else len(chunk.tokens)
                     chunk.tokens.append(token)
                     position += 1
                     if position == len(tokens):
-                        weight.end = len(chunk.tokens)
+                        weight.end = len(chunk.tokens) + 1 if not self.manual_mode else len(chunk.tokens)
                         chunk.multipliers.append(weight)
                     continue
 
@@ -229,9 +231,9 @@ class ClassicTextProcessingEngineTopKEmphasis:
 
                 chunk.fixes.append(PromptChunkFix(len(chunk.tokens), embedding))
 
-                weight.begin = len(chunk.tokens)
+                weight.begin = len(chunk.tokens) + 1 if not self.manual_mode else len(chunk.tokens)
                 chunk.tokens += [0] * emb_len
-                weight.end = len(chunk.tokens)
+                weight.end = len(chunk.tokens) + 1 if not self.manual_mode else len(chunk.tokens)
                 position += embedding_length_in_tokens
                 chunk.multipliers.append(weight)
 
@@ -308,8 +310,11 @@ class ClassicTextProcessingEngineTopKEmphasis:
 
         if self.id_end != self.id_pad:
             for batch_pos in range(len(remade_batch_tokens)):
-                index = remade_batch_tokens[batch_pos].index(self.id_end)
-                tokens[batch_pos, index + 1:tokens.shape[1]] = self.id_pad
+                try:
+                    index = remade_batch_tokens[batch_pos].index(self.id_end)
+                    tokens[batch_pos, index + 1:tokens.shape[1]] = self.id_pad
+                except ValueError:
+                    pass
 
         z = self.encode_with_transformers(tokens, batch_multipliers)
 
