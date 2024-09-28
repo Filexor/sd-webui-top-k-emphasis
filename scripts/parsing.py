@@ -225,7 +225,7 @@ def parse_prompt_attention(text) -> list[EmphasisPair|BREAK_Object]:
             if children[2] is None:
                 children[2] = "c"
             if children[3] is None:
-                children[3] = 1.0
+                children[3] = 0.0
             return Multiplier(children[0]*children[1], children[2], children[3], children[4:])
         def multiplier2(self, children: list[lark.lexer.Token]):
             if children[0] is None:
@@ -233,7 +233,7 @@ def parse_prompt_attention(text) -> list[EmphasisPair|BREAK_Object]:
             if children[4] is None:
                 children[4] = "c"
             if children[5] is None:
-                children[5] = 1.0
+                children[5] = 0.0
             return Multiplier(children[0]*children[2]*children[3], children[4], children[5], children[6:])
         def sign(self, children: list[lark.lexer.Token]):
             match children[0]:

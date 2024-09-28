@@ -15,6 +15,39 @@ class PromptChunk:
         self.multipliers: list[parsing.EmphasisPair] = []
         self.fixes = []
 
+class CLIPEmbeddingForTextualInversionTopKEmphasis(torch.nn.Module):
+    def __init__(self, token_embedding: CLIPEmbeddingForTextualInversion, emphasis_view_update, debug):
+        super().__init__()
+        self.wrapped = token_embedding.wrapped
+        self.embeddings = token_embedding.embeddings
+        self.textual_inversion_key = token_embedding.textual_inversion_key
+        self.weight = token_embedding.weight
+        self.emphasis_view_update = emphasis_view_update
+        self.debug = debug
+
+    def forward(self, input_ids):
+        batch_fixes = self.embeddings.fixes
+        self.embeddings.fixes = None
+
+        inputs_embeds = self.wrapped(input_ids)
+
+        if batch_fixes is None or len(batch_fixes) == 0 or max([len(x) for x in batch_fixes]) == 0:
+            return emphasis.emphasis_b(inputs_embeds, self.batch_multipliers, self.emphasis_view_update, self.textual_inversion_key, self.debug)
+
+        vecs = []
+        for fixes, tensor in zip(batch_fixes, inputs_embeds):
+            for offset, embedding in fixes:
+                emb = embedding.vec[self.textual_inversion_key] if isinstance(embedding.vec, dict) else embedding.vec
+                emb = emb.to(inputs_embeds)
+                emb_len = min(tensor.shape[0] - offset - 1, emb.shape[0])
+                tensor = torch.cat([tensor[0:offset + 1], emb[0:emb_len], tensor[offset + 1 + emb_len:]]).to(dtype=inputs_embeds.dtype)
+
+            vecs.append(tensor)
+
+        z = torch.stack(vecs)
+
+        return emphasis.emphasis_b(z, self.batch_multipliers, self.emphasis_view_update, self.textual_inversion_key, self.debug)
+
 class ClassicTextProcessingEngineTopKEmphasis:
     def __init__(
             self, text_encoder, tokenizer, chunk_length=75,
@@ -32,7 +65,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
 
-        self.emphasis = emphasis.TopKEmphasis(emphasis_view_update, debug)
+        self.emphasis = emphasis.TopKEmphasis(emphasis_view_update, debug, embedding_key)
         self.text_projection = text_projection
         self.minimal_clip_skip = minimal_clip_skip
         self.clip_skip = clip_skip
@@ -46,7 +79,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
         self.id_pad = self.tokenizer.pad_token_id
 
         model_embeddings = text_encoder.transformer.text_model.embeddings
-        model_embeddings.token_embedding = token_embedding
+        model_embeddings.token_embedding = CLIPEmbeddingForTextualInversionTopKEmphasis(token_embedding, emphasis_view_update, debug)
 
         vocab = self.tokenizer.get_vocab()
 
@@ -88,7 +121,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
 
         return tokenized
 
-    def encode_with_transformers(self, tokens):
+    def encode_with_transformers(self, tokens, batch_multipliers):
         target_device = memory_management.text_encoder_device()
 
         self.text_encoder.transformer.text_model.embeddings.position_ids = self.text_encoder.transformer.text_model.embeddings.position_ids.to(device=target_device)
@@ -97,6 +130,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
 
         tokens = tokens.to(target_device)
 
+        self.text_encoder.transformer.text_model.embeddings.token_embedding.batch_multipliers = batch_multipliers
         outputs = self.text_encoder.transformer(tokens, output_hidden_states=True)
 
         layer_id = - max(self.clip_skip, self.minimal_clip_skip)
@@ -277,7 +311,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
                 index = remade_batch_tokens[batch_pos].index(self.id_end)
                 tokens[batch_pos, index + 1:tokens.shape[1]] = self.id_pad
 
-        z = self.encode_with_transformers(tokens)
+        z = self.encode_with_transformers(tokens, batch_multipliers)
 
         pooled = getattr(z, 'pooled', None)
 
