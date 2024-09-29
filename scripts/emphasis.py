@@ -1365,7 +1365,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     if option[1] is not None:
                                         postoffset -= option[1]
                         if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
-                            break
+                            continue
                         weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
                         preoffset = torch.asarray([preoffset], dtype=torch.float32, device=z.device)
                         postoffset = torch.asarray([postoffset], dtype=torch.float32, device=z.device)
