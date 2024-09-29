@@ -9,19 +9,23 @@ The syntax is like this:
 
 `"(" <text> ":" ("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]] [("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]]]+ ")"`
 
-There are 12 types of key:
+There are 16 types of key:
 - "b": Emphasis will be applied after enumeration of embeddings.
-- "bl": Simillar to "b", but only for "clip_l". Both SD1.5 and SDXL uses "clip_l".
-- "bg": Simillar to "b", but only for "clip_g". SDXL also uses "clip_g".
+- "bl": similar to "b", but only for "clip_l". Both SD1.5 and SDXL uses "clip_l".
+- "bg": similar to "b", but only for "clip_g". SDXL also uses "clip_g".
 - "c": Emphasis will be applied after embeddings being converted to conditioning.
-- "l": Simillar to "c", but only for "clip_l". Both SD1.5 and SDXL uses "clip_l".
-- "g": Simillar to "c", but only for "clip_g". SDXL also uses "clip_g".
+- "l": similar to "c", but only for "clip_l". Both SD1.5 and SDXL uses "clip_l".
+- "g": similar to "c", but only for "clip_g". SDXL also uses "clip_g".
 - "pk": Emphasis will be applied before conditioning being feeded to each to_k in cross attention.
 - "k": Emphasis will be applied after conditioning being feeded to each to_k in cross attention.
 - "pv": Emphasis will be applied before conditioning being feeded to each to_v in cross attention.
 - "v": Emphasis will be applied after conditioning being feeded to each to_v in cross attention.
-- "q": Emphasis will be applied after each `torch.einsum('b i d, b j d -> b i j', q, k)` in cross attention.
-- "s": Similar to "q" but applied after softmax.
+- "q": Emphasis will be applied after each `torch.einsum('b i d, b j d -> b i j', q, k)` in cross attention. Heads and latent elements will be sorted for thresholding.
+- "ql": Similar to "q" but only latent elements will be sorted for thresholding.
+- "qh": Similar to "q" but only heads will be sorted for thresholding.
+- "s": Similar to "q" but applied after softmax. Heads and latent will be sorted for thresholding.
+- "sl": Similar to "s" but only latent elements will be sorted for thresholding.
+- "sh": Similar to "s" but only heads will be sorted for thresholding.
 
 If you omit key, it will be interpreted as "c".
 

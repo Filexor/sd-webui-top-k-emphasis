@@ -1117,7 +1117,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     if option[1] is not None:
                                         postoffset -= option[1]
                         if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
-                            break
+                            continue
                         weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
                         preoffset = torch.asarray([preoffset], dtype=torch.float32, device=z.device)
                         postoffset = torch.asarray([postoffset], dtype=torch.float32, device=z.device)
@@ -1571,3 +1571,581 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z[i, pair.begin:pair.end, thres_top:thres_bottom] += postoffset
     return z
 
+def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[EmphasisPair]], multipliers_neg: list[list[EmphasisPair]], keys: list[str], crossattentioncounter, emphasis_view_update, debug):
+    z = einops.rearrange(z, "(i h) l t -> i h t l", h=heads)
+    latent_size = z.shape[3]
+    multipliers = multipliers_neg + multipliers_pos
+    if emphasis_view_update:
+        for i, pairs in enumerate(multipliers):
+            for pair in pairs:
+                for multiplier in pair.multipliers:
+                    if multiplier.key not in keys:
+                        continue
+                    mode = None
+                    value = None
+                    preoffset = 0.0
+                    postoffset = 0.0
+                    crossattentioncountertargets = []
+                    for option in multiplier.options:
+                        match option[0]:
+                            case "b" | "o" | "m" | "r":
+                                if mode is None:
+                                    mode = option[0]
+                                    if option[1] is not None:
+                                        value = option[1]
+                                    else:
+                                        value = multiplier.threshold
+                            case "c":
+                                if mode is None:
+                                    mode = option[0]
+                                    if option[1] is not None:
+                                        value = option[1]
+                                    else:
+                                        value = multiplier.threshold + 1
+                            case "n":
+                                if option[1] is not None:
+                                    crossattentioncountertargets.append(int(option[1]))
+                            case "pa":
+                                if option[1] is not None:
+                                    preoffset += option[1]
+                            case "ps":
+                                if option[1] is not None:
+                                    preoffset -= option[1]
+                            case "a":
+                                if option[1] is not None:
+                                    postoffset += option[1]
+                            case "s":
+                                if option[1] is not None:
+                                    postoffset -= option[1]
+                    if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
+                        continue
+                    if multiplier.key == keys[0]:
+                        # "q", "s"
+                        dim1_size = 1
+                        z = einops.rearrange(z, "i h t l -> i t (h l)")
+                    elif multiplier.key == keys[1]:
+                        # "ql", "sl"
+                        dim1_size = z.shape[1]
+                        z = einops.rearrange(z, "i h t l -> i (t h) l")
+                    elif multiplier.key == keys[2]:
+                        # "qh", "sh"
+                        dim1_size = z.shape[3]
+                        z = einops.rearrange(z, "i h t l -> i (t l) h")
+                    else:
+                        continue   
+                    weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
+                    preoffset = torch.asarray([preoffset], dtype=torch.float32, device=z.device)
+                    postoffset = torch.asarray([postoffset], dtype=torch.float32, device=z.device)
+                    zero = torch.asarray([0.0], dtype=torch.float32, device=z.device)
+                    one = torch.asarray([1.0], dtype=torch.float32, device=z.device)
+                    match mode:
+                        case None:
+                            thres_top = multiplier.threshold
+                            thres_top = z.shape[2] if thres_top == 0 else thres_top
+                            thres_top = thres_top * z.shape[2] if thres_top < 1 else thres_top
+                            thres_top = z.shape[2] if thres_top > z.shape[2] else thres_top
+                            thres_top = thres_top - 1
+                            thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                            z_des = z[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                            z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                            z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            target = z[i, pair.begin * dim1_size:pair.end * dim1_size, :] >= z_des_exp
+                            if debug: print(target.to(device="cpu").nonzero().tolist())
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "b":
+                            if multiplier.threshold == 0.0 and value == 0.0:
+                                if debug: print("Emphasis will be skipped.")
+                                pass
+                            elif multiplier.threshold != 0.0 and value == 0.0:
+                                thres_top = multiplier.threshold
+                                #thres_top = z.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z.shape[2] if thres_top > z.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                                z_des = z[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = z[i, pair.begin * dim1_size:pair.end * dim1_size, :] >= z_des_exp
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                            elif multiplier.threshold == 0.0 and value != 0.0:
+                                thres_top = value
+                                #thres_top = z.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z.shape[2] if thres_top > z.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                                z_des = z[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=False).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = z[i, pair.begin * dim1_size:pair.end * dim1_size, :] <= z_des_exp
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                            elif multiplier.threshold != 0.0 and value != 0.0:
+                                thres_top = multiplier.threshold
+                                #thres_top = z.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z.shape[2] if thres_top > z.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                                thres_bottom = value
+                                #thres_bottom = z.shape[2] if thres_bottom == 0 else thres_bottom
+                                thres_bottom = thres_bottom * z.shape[2] if thres_bottom < 1 else thres_bottom
+                                thres_bottom = z.shape[2] if thres_bottom > z.shape[2] else thres_bottom
+                                thres_bottom = thres_bottom - 1
+                                thres_bottom = torch.asarray([thres_bottom]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                                z_des = z[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                z_asc = z_des.flip([-1])
+                                z_asc_sel = z_asc.index_select(dim=-1, index=thres_bottom).diag()
+                                z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = (z[i, pair.begin * dim1_size:pair.end * dim1_size, :] >= z_des_exp) | (z[i, pair.begin * dim1_size:pair.end * dim1_size, :] <= z_asc_exp)
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "o":
+                            if multiplier.threshold == 0.0 and value == 0.0:
+                                if debug: print("Emphasis will be applied to all elements in specified tokens.")
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += preoffset
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= weight
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += postoffset
+                            elif multiplier.threshold != 0.0 and value == 0.0:
+                                thres_top = multiplier.threshold
+                                #thres_top = z.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z.shape[2] if thres_top > z.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                                z_des = z[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = z[i, pair.begin * dim1_size:pair.end * dim1_size, :] < z_des_exp
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                            elif multiplier.threshold == 0.0 and value != 0.0:
+                                thres_top = value
+                                #thres_top = z.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z.shape[2] if thres_top > z.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                                z_des = z[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=False).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = z[i, pair.begin * dim1_size:pair.end * dim1_size, :] > z_des_exp
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                            elif multiplier.threshold != 0.0 and value != 0.0:
+                                thres_top = multiplier.threshold
+                                #thres_top = z.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z.shape[2] if thres_top > z.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                                thres_bottom = value
+                                #thres_bottom = z.shape[2] if thres_bottom == 0 else thres_bottom
+                                thres_bottom = thres_bottom * z.shape[2] if thres_bottom < 1 else thres_bottom
+                                thres_bottom = z.shape[2] if thres_bottom > z.shape[2] else thres_bottom
+                                thres_bottom = thres_bottom - 1
+                                thres_bottom = torch.asarray([thres_bottom]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                                z_des = z[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                z_asc = z_des.flip([-1])
+                                z_asc_sel = z_asc.index_select(dim=-1, index=thres_bottom).diag()
+                                z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = (z[i, pair.begin * dim1_size:pair.end * dim1_size, :] < z_des_exp) & (z[i, pair.begin * dim1_size:pair.end * dim1_size, :] > z_asc_exp)
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "m":
+                            thres_top = multiplier.threshold
+                            thres_top = (z.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
+                            thres_top = (z.shape[2] // 2) - thres_top * (z.shape[2] // 2) if thres_top < 1 else thres_top
+                            thres_top = z.shape[2] if thres_top > z.shape[2] else thres_top
+                            thres_top = thres_top - 1
+                            thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                            thres_bottom = value
+                            thres_bottom = (z.shape[2] // 2) - thres_bottom if thres_bottom >= 1 else thres_bottom
+                            thres_bottom = (z.shape[2] // 2) - thres_bottom * (z.shape[2] // 2) if thres_bottom < 1 else thres_bottom
+                            thres_bottom = z.shape[2] if thres_bottom > z.shape[2] else thres_bottom
+                            thres_bottom = thres_bottom - 1
+                            thres_bottom = torch.asarray([thres_bottom]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                            z_des = z[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                            z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                            z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            z_asc = z_des.flip([-1])
+                            z_asc_sel = z_asc.index_select(dim=-1, index=thres_bottom).diag()
+                            z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            target = (z[i, pair.begin * dim1_size:pair.end * dim1_size, :] < z_des_exp) & (z[i, pair.begin * dim1_size:pair.end * dim1_size, :] > z_asc_exp)
+                            if debug: print(target.to(device="cpu").nonzero().tolist())
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "r":
+                            thres_top = multiplier.threshold
+                            #thres_top = z.shape[2] if thres_top == 0 else thres_top
+                            thres_top = thres_top * z.shape[2] if thres_top < 1 else thres_top
+                            thres_top = z.shape[2] - 1 if thres_top > z.shape[2] - 1 else thres_top
+                            #thres_top = thres_top - 1
+                            thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                            thres_bottom = value
+                            #thres_bottom = z.shape[2] if thres_bottom == 0 else thres_bottom
+                            thres_bottom = thres_bottom * z.shape[2] if thres_bottom < 1 else thres_bottom
+                            thres_bottom = z.shape[2] - 1 if thres_bottom > z.shape[2] - 1 else thres_bottom
+                            #thres_bottom = thres_bottom - 1
+                            thres_bottom = torch.asarray([thres_bottom]).to(dtype=torch.int32, device=z.device).expand((pair.end-pair.begin, ))
+                            z_des = z[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                            z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                            z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            z_asc = z_des
+                            z_asc_sel = z_asc.index_select(dim=-1, index=thres_bottom).diag()
+                            z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            target = (z[i, pair.begin * dim1_size:pair.end * dim1_size, :] <= z_des_exp) & (z[i, pair.begin * dim1_size:pair.end * dim1_size, :] >= z_asc_exp)
+                            if debug: print(target.to(device="cpu").nonzero().tolist())
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "c":
+                            thres_top = multiplier.threshold
+                            #thres_top = z.shape[2] if thres_top == 0 else thres_top
+                            thres_top = thres_top * z.shape[2] if thres_top < 1 else thres_top
+                            thres_top = z.shape[2] - 1 if thres_top > z.shape[2] else thres_top
+                            thres_top = int(thres_top)
+                            #thres_top = thres_top - 1
+                            thres_bottom = value
+                            #thres_bottom = z.shape[2] if thres_bottom == 0 else thres_bottom
+                            thres_bottom = thres_bottom * z.shape[2] if thres_bottom < 1 else thres_bottom
+                            thres_bottom = z.shape[2] if thres_bottom > z.shape[2] else thres_bottom
+                            # thres_bottom = thres_bottom - 1
+                            thres_bottom = int(thres_bottom)
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, thres_top:thres_bottom] += preoffset
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, thres_top:thres_bottom] *= weight
+                            z[i, pair.begin * dim1_size:pair.end * dim1_size, thres_top:thres_bottom] += postoffset
+                    if multiplier.key == keys[0]:
+                        # "q", "s"
+                        z = einops.rearrange(z, "i t (h l) -> i h t l", l=latent_size)
+                    elif multiplier.key == keys[1]:
+                        # "ql", "sl"
+                        z = einops.rearrange(z, "i (t h) l -> i h t l", h=heads)
+                    elif multiplier.key == keys[2]:
+                        # "qh", "sh"
+                        z = einops.rearrange(z, "i (t l) h -> i h t l", l=latent_size)
+                    else:
+                        continue  
+                
+    else:
+        for i, pairs in enumerate(multipliers):
+            for pair in pairs:
+                dim1_size_hl = 1
+                z_hl = einops.rearrange(z, "i h t l -> i t (h l)")
+                z_des_hl = z_hl[i, pair.begin:pair.end, :].sort(dim=-1, descending=True).values
+                z_asc_hl = z_des_hl.flip([-1])
+                dim1_size_l = z.shape[1]
+                z_l = einops.rearrange(z, "i h t l -> i (t h) l")
+                z_des_l = z_l[i, pair.begin * dim1_size_l:pair.end * dim1_size_l, :].sort(dim=-1, descending=True).values
+                z_asc_l = z_des_l.flip([-1])
+                dim1_size_h = z.shape[3]
+                z_h = einops.rearrange(z, "i h t l -> i (t l) h")
+                z_des_h = z_h[i, pair.begin * dim1_size_h:pair.end * dim1_size_h, :].sort(dim=-1, descending=True).values
+                z_asc_h = z_des_h.flip([-1])
+                for multiplier in pair.multipliers:
+                    if multiplier.key not in keys:
+                        continue
+                    mode = None
+                    value = None
+                    preoffset = 0.0
+                    postoffset = 0.0
+                    crossattentioncountertargets = []
+                    for option in multiplier.options:
+                        match option[0]:
+                            case "b" | "o" | "m" | "r":
+                                if mode is None:
+                                    mode = option[0]
+                                    if option[1] is not None:
+                                        value = option[1]
+                                    else:
+                                        value = multiplier.threshold
+                            case "c":
+                                if mode is None:
+                                    mode = option[0]
+                                    if option[1] is not None:
+                                        value = option[1]
+                                    else:
+                                        value = multiplier.threshold + 1
+                            case "n":
+                                if option[1] is not None:
+                                    crossattentioncountertargets.append(int(option[1]))
+                            case "pa":
+                                if option[1] is not None:
+                                    preoffset += option[1]
+                            case "ps":
+                                if option[1] is not None:
+                                    preoffset -= option[1]
+                            case "a":
+                                if option[1] is not None:
+                                    postoffset += option[1]
+                            case "s":
+                                if option[1] is not None:
+                                    postoffset -= option[1]
+                    if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
+                        continue
+                    if multiplier.key == keys[0]:
+                        # "q", "s"
+                        dim1_size = dim1_size_hl
+                        z_v = z_hl
+                        z_des = z_des_hl
+                        z_asc = z_asc_hl
+                    elif multiplier.key == keys[1]:
+                        # "ql", "sl"
+                        dim1_size = dim1_size_l
+                        z_v = z_l
+                        z_des = z_des_l
+                        z_asc = z_asc_l
+                    elif multiplier.key == keys[2]:
+                        # "qh", "sh"
+                        dim1_size = dim1_size_h
+                        z_v = z_h
+                        z_des = z_des_h
+                        z_asc = z_asc_h
+                    else:
+                        continue   
+                    weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
+                    preoffset = torch.asarray([preoffset], dtype=torch.float32, device=z.device)
+                    postoffset = torch.asarray([postoffset], dtype=torch.float32, device=z.device)
+                    zero = torch.asarray([0.0], dtype=torch.float32, device=z.device)
+                    one = torch.asarray([1.0], dtype=torch.float32, device=z.device)
+                    match mode:
+                        case None:
+                            thres_top = multiplier.threshold
+                            thres_top = z_v.shape[2] if thres_top == 0 else thres_top
+                            thres_top = thres_top * z_v.shape[2] if thres_top < 1 else thres_top
+                            thres_top = z_v.shape[2] if thres_top > z_v.shape[2] else thres_top
+                            thres_top = thres_top - 1
+                            thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                            #z_des = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                            z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                            z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            target = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] >= z_des_exp
+                            if debug: print(target.to(device="cpu").nonzero().tolist())
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "b":
+                            if multiplier.threshold == 0.0 and value == 0.0:
+                                if debug: print("Emphasis will be skipped.")
+                                pass
+                            elif multiplier.threshold != 0.0 and value == 0.0:
+                                thres_top = multiplier.threshold
+                                #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z_v.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z_v.shape[2] if thres_top > z_v.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                                #z_des = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] >= z_des_exp
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                            elif multiplier.threshold == 0.0 and value != 0.0:
+                                thres_top = value
+                                #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z_v.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z_v.shape[2] if thres_top > z_v.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                                #z_des = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=False).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] <= z_des_exp
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                            elif multiplier.threshold != 0.0 and value != 0.0:
+                                thres_top = multiplier.threshold
+                                #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z_v.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z_v.shape[2] if thres_top > z_v.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                                thres_bottom = value
+                                #thres_bottom = z_v.shape[2] if thres_bottom == 0 else thres_bottom
+                                thres_bottom = thres_bottom * z_v.shape[2] if thres_bottom < 1 else thres_bottom
+                                thres_bottom = z_v.shape[2] if thres_bottom > z_v.shape[2] else thres_bottom
+                                thres_bottom = thres_bottom - 1
+                                thres_bottom = torch.asarray([thres_bottom]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                                #z_des = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                #z_asc = z_des.flip([-1])
+                                z_asc_sel = z_asc.index_select(dim=-1, index=thres_bottom).diag()
+                                z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = (z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] >= z_des_exp) | (z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] <= z_asc_exp)
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "o":
+                            if multiplier.threshold == 0.0 and value == 0.0:
+                                if debug: print("Emphasis will be applied to all elements in specified tokens.")
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += preoffset
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= weight
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += postoffset
+                            elif multiplier.threshold != 0.0 and value == 0.0:
+                                thres_top = multiplier.threshold
+                                #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z_v.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z_v.shape[2] if thres_top > z_v.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                                #z_des = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] < z_des_exp
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                            elif multiplier.threshold == 0.0 and value != 0.0:
+                                thres_top = value
+                                #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z_v.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z_v.shape[2] if thres_top > z_v.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                                #z_des = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=False).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] > z_des_exp
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                            elif multiplier.threshold != 0.0 and value != 0.0:
+                                thres_top = multiplier.threshold
+                                #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
+                                thres_top = thres_top * z_v.shape[2] if thres_top < 1 else thres_top
+                                thres_top = z_v.shape[2] if thres_top > z_v.shape[2] else thres_top
+                                thres_top = thres_top - 1
+                                thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                                thres_bottom = value
+                                #thres_bottom = z_v.shape[2] if thres_bottom == 0 else thres_bottom
+                                thres_bottom = thres_bottom * z_v.shape[2] if thres_bottom < 1 else thres_bottom
+                                thres_bottom = z_v.shape[2] if thres_bottom > z_v.shape[2] else thres_bottom
+                                thres_bottom = thres_bottom - 1
+                                thres_bottom = torch.asarray([thres_bottom]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                                #z_des = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                                z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                                z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                #z_asc = z_des.flip([-1])
+                                z_asc_sel = z_asc.index_select(dim=-1, index=thres_bottom).diag()
+                                z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                                target = (z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] < z_des_exp) & (z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] > z_asc_exp)
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                                z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "m":
+                            thres_top = multiplier.threshold
+                            thres_top = (z_v.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
+                            thres_top = (z_v.shape[2] // 2) - thres_top * (z_v.shape[2] // 2) if thres_top < 1 else thres_top
+                            thres_top = z_v.shape[2] if thres_top > z_v.shape[2] else thres_top
+                            thres_top = thres_top - 1
+                            thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                            thres_bottom = value
+                            thres_bottom = (z_v.shape[2] // 2) - thres_bottom if thres_bottom >= 1 else thres_bottom
+                            thres_bottom = (z_v.shape[2] // 2) - thres_bottom * (z_v.shape[2] // 2) if thres_bottom < 1 else thres_bottom
+                            thres_bottom = z_v.shape[2] if thres_bottom > z_v.shape[2] else thres_bottom
+                            thres_bottom = thres_bottom - 1
+                            thres_bottom = torch.asarray([thres_bottom]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                            #z_des = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                            z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                            z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            #z_asc = z_des.flip([-1])
+                            z_asc_sel = z_asc.index_select(dim=-1, index=thres_bottom).diag()
+                            z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            target = (z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] < z_des_exp) & (z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] > z_asc_exp)
+                            if debug: print(target.to(device="cpu").nonzero().tolist())
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "r":
+                            thres_top = multiplier.threshold
+                            #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
+                            thres_top = thres_top * z_v.shape[2] if thres_top < 1 else thres_top
+                            thres_top = z_v.shape[2] - 1 if thres_top > z_v.shape[2] - 1 else thres_top
+                            #thres_top = thres_top - 1
+                            thres_top = torch.asarray([thres_top]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                            thres_bottom = value
+                            #thres_bottom = z_v.shape[2] if thres_bottom == 0 else thres_bottom
+                            thres_bottom = thres_bottom * z_v.shape[2] if thres_bottom < 1 else thres_bottom
+                            thres_bottom = z_v.shape[2] - 1 if thres_bottom > z_v.shape[2] - 1 else thres_bottom
+                            #thres_bottom = thres_bottom - 1
+                            thres_bottom = torch.asarray([thres_bottom]).to(dtype=torch.int32, device=z_v.device).expand((pair.end-pair.begin, ))
+                            #z_des = z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :].sort(dim=-1, descending=True).values
+                            z_des_sel = z_des.index_select(dim=-1, index=thres_top).diag()
+                            z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            #z_asc = z_des
+                            z_asc_sel = z_des.index_select(dim=-1, index=thres_bottom).diag()
+                            z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2])).repeat_interleave(dim1_size, dim=0)
+                            target = (z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] <= z_des_exp) & (z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] >= z_asc_exp)
+                            if debug: print(target.to(device="cpu").nonzero().tolist())
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, preoffset, zero)
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] *= torch.where(target, weight, one)
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, :] += torch.where(target, postoffset, zero)
+                        case "c":
+                            thres_top = multiplier.threshold
+                            #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
+                            thres_top = thres_top * z_v.shape[2] if thres_top < 1 else thres_top
+                            thres_top = z_v.shape[2] - 1 if thres_top > z_v.shape[2] else thres_top
+                            thres_top = int(thres_top)
+                            #thres_top = thres_top - 1
+                            thres_bottom = value
+                            #thres_bottom = z_v.shape[2] if thres_bottom == 0 else thres_bottom
+                            thres_bottom = thres_bottom * z_v.shape[2] if thres_bottom < 1 else thres_bottom
+                            thres_bottom = z_v.shape[2] if thres_bottom > z_v.shape[2] else thres_bottom
+                            # thres_bottom = thres_bottom - 1
+                            thres_bottom = int(thres_bottom)
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, thres_top:thres_bottom] += preoffset
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, thres_top:thres_bottom] *= weight
+                            z_v[i, pair.begin * dim1_size:pair.end * dim1_size, thres_top:thres_bottom] += postoffset
+                    if multiplier.key == keys[0]:
+                        # "q", "s"
+                        z = einops.rearrange(z_v, "i t (h l) -> i h t l", l=latent_size)
+                        z_hl = einops.rearrange(z, "i h t l -> i t (h l)")
+                        z_l = einops.rearrange(z, "i h t l -> i (t h) l")
+                        z_h = einops.rearrange(z, "i h t l -> i (t l) h")
+                    elif multiplier.key == keys[1]:
+                        # "ql", "sl"
+                        z = einops.rearrange(z_v, "i (t h) l -> i h t l", h=heads)
+                        z_hl = einops.rearrange(z, "i h t l -> i t (h l)")
+                        z_l = einops.rearrange(z, "i h t l -> i (t h) l")
+                        z_h = einops.rearrange(z, "i h t l -> i (t l) h")
+                    elif multiplier.key == keys[2]:
+                        # "qh", "sh"
+                        z = einops.rearrange(z_v, "i (t l) h -> i h t l", l=latent_size)
+                        z_hl = einops.rearrange(z, "i h t l -> i t (h l)")
+                        z_l = einops.rearrange(z, "i h t l -> i (t h) l")
+                        z_h = einops.rearrange(z, "i h t l -> i (t l) h")
+                    else:
+                        continue  
+    z = einops.rearrange(z, "i h t l -> (i h) l t")
+    return z

@@ -384,10 +384,8 @@ def hook_forward(self):
             sim = torch.einsum('b i d, b j d -> b i j', q, k) * scale
 
         del q, k
-        sim = einops.rearrange(sim, "(i h) l t -> i t (h l)", h=heads)
-        sim = emphasis.emphasis_crossattention(sim, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "q", 
+        sim = emphasis.emphasis_crossattention2(sim, heads, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, ["q", "ql", "qh"], 
                                     TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
-        sim = einops.rearrange(sim, "i t (h l) -> (i h) l t", h=heads)
 
         if exists(mask):
             if mask.dtype == torch.bool:
@@ -404,10 +402,8 @@ def hook_forward(self):
                 sim.add_(mask)
 
         sim = sim.softmax(dim=-1)
-        sim = einops.rearrange(sim, "(i h) l t -> i t (h l)", h=heads)
-        sim = emphasis.emphasis_crossattention(sim, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "s", 
+        sim = emphasis.emphasis_crossattention2(sim, heads, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, ["s", "sl", "sh"], 
                                     TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
-        sim = einops.rearrange(sim, "i t (h l) -> (i h) l t", h=heads)
         out = torch.einsum('b i j, b j d -> b i d', sim.to(v.dtype), v)
         out = (
             out.unsqueeze(0)
