@@ -4,8 +4,8 @@ import lark
 
 rules=r"""
 start: break1
-break1: [/BREAK /] (text|break3)?
-text: (OTHER|/\s(?!BREAK )/|escaped|emphasis|op|cp|ob|cb|break2) (text|break3)?
+break1: [/BREAK\s/] (text|break3)?
+text: (OTHER|/\s(?!BREAK\s)/|escaped|emphasis|op|cp|ob|cb|break2) (text|break3)?
 OTHER.-1: /[^\(\)\[\]\:\s\\]+/
 escaped: "\\" /./ (text|break3)?
 emphasis: "(" [text] ":" multiplier1 ([/\s+/] multiplier2)* ")" (text|break3)?
@@ -19,8 +19,8 @@ op: "(" (text|break3)?
 cp: ")" (text|break3)?
 ob: "[" (text|break3)?
 cb: "]" (text|break3)?
-break2: " BREAK " (text|break3)?
-break3: " BREAK"
+break2: /\sBREAK\s/ (text|break3)?
+break3: /\sBREAK/
 """
 lark_rules = lark.lark.Lark(rules, parser="lalr")
 
@@ -320,12 +320,12 @@ def parse_prompt_attention(text) -> list[EmphasisPair|BREAK_Object]:
                 else:
                     raise Exception('Unexpected type given.', str(children[0]))
         def break2(self, children: list[list[EmphasisPair|BREAK_Object]]):
-            if len(children) == 0:
+            if len(children) <= 1:
                 return [BREAK_Object()]
             else:
-                if isinstance(children[0], list):
-                    children[0].insert(0, BREAK_Object())
-                    return children[0]
+                if isinstance(children[1], list):
+                    children[1].insert(0, BREAK_Object())
+                    return children[1]
                 else:
                     raise Exception('Unexpected type given.', str(children[0]))
         def break3(self, children):
