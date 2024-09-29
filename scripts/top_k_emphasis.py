@@ -9,6 +9,7 @@ import modules
 from modules.devices import device
 from modules.processing import StableDiffusionProcessing
 import modules.scripts
+import modules.script_callbacks
 from modules import sd_samplers
 from backend import memory_management
 from backend.args import args, dynamic_args
@@ -33,6 +34,7 @@ class TopKEmphasis(modules.scripts.Script):
         "s": Similar to "q" but after softmax.
     """
 
+    active = False
     extra_mode = False
     model_type = None
     text_processing_engine_original = None
@@ -69,6 +71,8 @@ class TopKEmphasis(modules.scripts.Script):
         return [active, extra_mode, manual_mode, emphasis_view_update, debug]
     
     def before_process(self, p: StableDiffusionProcessing, active, extra_mode, manual_mode, emphasis_view_update, debug, *args, **kwargs):
+        TopKEmphasis.active = active
+        TopKEmphasis.extra_mode = extra_mode
         if not active: return
         print("Loading Top K Emphasis.")
         if hasattr(p.sd_model, "text_processing_engine"):
@@ -144,13 +148,6 @@ class TopKEmphasis(modules.scripts.Script):
         p.cached_uc = [None, None, None]
         p.c, TopKEmphasis.positive_multiplier, p.uc, TopKEmphasis.negative_multiplier = setup_conds(p)
 
-    def process_before_every_sampling(self, p: StableDiffusionProcessing, active, extra_mode, *args, **kwargs):
-        if not active: return
-        TopKEmphasis.extra_mode = extra_mode
-        TopKEmphasis.reconstructed_positive_multiplier = prompt_parser.reconstruct_multi_multiplier_batch(TopKEmphasis.positive_multiplier, p.steps)
-        TopKEmphasis.reconstructed_negative_multiplier = prompt_parser.reconstruct_multiplier_batch(TopKEmphasis.negative_multiplier, p.steps) if TopKEmphasis.negative_multiplier is not None else None
-        TopKEmphasis.crossattentioncounter = 0
-
     def postprocess(self, p: StableDiffusionProcessing, processed, active, *args):
         if not active: return
         match TopKEmphasis.model_type:
@@ -167,6 +164,14 @@ class TopKEmphasis(modules.scripts.Script):
                     p.sd_model.get_learned_conditioning = TopKEmphasis.get_learned_conditioning_sdxl_original
                 hook_forwards(p.sd_model.forge_objects.unet.model, True)
         print("Unloading Top K Emphasis.")
+
+def top_k_emphasis_on_cfg_denoiser(params: modules.script_callbacks.CFGDenoiserParams, *args, **kwargs):
+    if not TopKEmphasis.active: return
+    TopKEmphasis.reconstructed_positive_multiplier = prompt_parser.reconstruct_multi_multiplier_batch(TopKEmphasis.positive_multiplier, params.sampling_step)
+    TopKEmphasis.reconstructed_negative_multiplier = prompt_parser.reconstruct_multiplier_batch(TopKEmphasis.negative_multiplier, params.sampling_step) if TopKEmphasis.negative_multiplier is not None else None
+    TopKEmphasis.crossattentioncounter = 0
+
+modules.script_callbacks.on_cfg_denoiser(top_k_emphasis_on_cfg_denoiser)
 
 @torch.inference_mode()
 def get_learned_conditioning_sdxl(self, prompt: list[str]):
