@@ -3,57 +3,49 @@ from copy import deepcopy
 import lark
 
 rules=r"""
-start: text1*
-text1: (other|emphasis|op|cp|ob|cb|break1)*
-text2: (other|emphasis|break2)*
-emphasis: "(" text2* ":" [S] weight1 ([S] weight2)* [S] ")"
-?other: (OTHER|escaped|COLON|BACKSLASH)+
-?escaped.1: "\\" (OP|CP|OB|CB)
-weight1.1: multiplier1 [key [threshold]]
-weight2.1: multiplier2 [key [threshold]]
-multiplier1: /[+-]?(?:\d+\.?\d*|\d*\.?\d+)/
-multiplier2: signs /(?:\d+\.?\d*|\d*\.?\d+)/
-key: /[a-zA-Z]/
-threshold: /\d+\.?\d*|\d*\.?\d+/
-S: /\s+/
-OTHER: /[^\(\)\[\]\:\\]+/
-op: OP
-cp: CP
-ob: OB
-cb: CB
-OP: "("
-CP: ")"
-OB: "["
-CB: "]"
-COLON: ":"
-BACKSLASH: "\\"
-signs: pp|pn|np|nn|p|n
-pp: /\+\s*\+/
-pn: /\+\s*\-/
-np: /\-\s*\+/
-nn: /\-\s*\-/
-p: /\+\s*/
-n: /\-\s*/
-break1.1: /^BREAK\s+|\s+BREAK$/
-break2.2: /\sBREAK\s/
-%ignore S
+start: break1
+break1: [/BREAK /] (text|break3)?
+text: (OTHER|/\s(?!BREAK )/|escaped|emphasis|op|cp|ob|cb|break2) (text|break3)?
+OTHER.-1: /[^\(\)\[\]\:\s\\]+/
+escaped: "\\" /./ (text|break3)?
+emphasis: "(" [text] ":" multiplier1 ([/\s+/] multiplier2)* ")" (text|break3)?
+multiplier1: [sign] float [key [float [option*]]]
+multiplier2: [sign [/\s+/]] sign float [key [float [option*]]]
+sign: /[+-]/
+key: /[a-zA-Z]+/
+float: /\d+/|/\d+\.\d*/|/\d*\.\d+/
+option: key [float]
+op: "(" (text|break3)?
+cp: ")" (text|break3)?
+ob: "[" (text|break3)?
+cb: "]" (text|break3)?
+break2: " BREAK " (text|break3)?
+break3: " BREAK"
 """
-lark_rules = lark.lark.Lark(rules)
+lark_rules = lark.lark.Lark(rules, parser="lalr")
 
 class Multiplier():
-    def __init__(self, weight: float = 1.0, key: str = "c", threshold: float = 0.0) -> None:
+    def __init__(self, weight: float = 1.0, key: str = "c", threshold: float = 0.0, options: list[tuple[str, float|None]] = []) -> None:
         self.weight = weight
         self.key = key
         self.threshold = threshold
-        pass
+        self.options = options
+
+    def __repr__(self) -> str:
+        return str((self.weight, self.key, self.threshold, self.options))
 
 class EmphasisPair():
-    def __init__(self, text: str = "", multipliers: list[Multiplier] = [Multiplier()]) -> None:
+    def __init__(self, text: str = "", multipliers: list[Multiplier] = []) -> None:
         self.text = deepcopy(text)
         self.multipliers = deepcopy(multipliers)
+        self.begin = None
+        self.end = None
 
     def __iter__(self):
         return EmphasisPairIterator(self)
+    
+    def __repr__(self) -> str:
+        return '"' + self.text + '" ' + str(self.multipliers)
     
 class EmphasisPairIterator():
     def __init__(self, ref: EmphasisPair) -> None:
@@ -74,101 +66,274 @@ class EmphasisPairIterator():
                 return self.ref.multipliers
             case _:
                 raise StopIteration()
+            
+class BREAK_Object():
+    def __init__(self) -> None:
+        """BREAK is never appear in conditioning so location is not needed."""
+        self.text = "BREAK"
+        self.multipliers = []
 
-def parse_prompt_attention(text):
-    emphasis_pairs: list[EmphasisPair] = []
+    def __iter__(self):
+        return BREAK_ObjectIterator(self)
+    
+    def __repr__(self) -> str:
+        return '"' + self.text + '" ' + str(self.multipliers)
+    
+class BREAK_ObjectIterator():
+    def __init__(self, ref: BREAK_Object) -> None:
+        self.i = 0
+        self.ref = ref
+        pass
+
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
+        match self.i:
+            case 0:
+                self.i += 1
+                return self.ref.text
+            case 1:
+                self.i += 1
+                return self.ref.multipliers
+            case _:
+                raise StopIteration()
+            
+def apply_multiplier(input: list, multipliers: list[Multiplier]):
+    if isinstance(input[0], str):
+        input[0] = EmphasisPair(input[0], multipliers)
+    elif isinstance(input[0], lark.tree.Tree):
+        raise Exception(f'Unexpected tree given.', str(input[0]))
+    elif isinstance(input[0], (EmphasisPair, BREAK_Object)):
+        input[0].multipliers = multipliers + input[0].multipliers
+    elif isinstance(input[0], list):
+        for i in range(len(input[0])):
+            apply_multiplier([input[0][i]], multipliers)
+    else:
+        raise Exception('Unexpected type given.', str(input[0]))
+
+def parse_prompt_attention(text) -> list[EmphasisPair|BREAK_Object]:
     root = lark_rules.parse(text)
+    #print(root.pretty())
 
     class Preprocess(lark.visitors.Transformer):
-        def multiplier1(self, children: list):
-            return str.join("", children)
-        def multiplier2(self, children: list):
-            return str.join("", children)
-        def signs(self, children: list):
-            return str.join("", children)
-        def key(self, children: list):
-            return str.join("", children)
-        def threshold(self, children: list):
-            return str.join("", children)
-        def pp(self, token:lark.lexer.Token):
-            return "+"
-        def pn(self, token:lark.lexer.Token):
-            return "-"
-        def np(self, token:lark.lexer.Token):
-            return "-"
-        def nn(self, token:lark.lexer.Token):
-            return "+"
-        def p(self, token:lark.lexer.Token):
-            return "+"
-        def n(self, token:lark.lexer.Token):
-            return "-"
+        def start(self, children: list[EmphasisPair|BREAK_Object|list]|None):
+            if children is None:
+                return [EmphasisPair()]
+            elif len(children) == 0:
+                return [EmphasisPair()]
+            elif isinstance(children[0], (EmphasisPair, BREAK_Object)):
+                return [children[0]]
+            elif isinstance(children[0], list):
+                return children[0]
+            else:
+                raise Exception('Unexpected type given.', str(children[0]))
+        def break1(self, children: list[EmphasisPair|BREAK_Object|list]):
+            if len(children) == 1:
+                if children[0] is None:
+                    return lark.visitors.Discard
+                else:
+                    return BREAK_Object()
+            else:
+                if children[0] is None:
+                    return children[1]
+                elif isinstance(children[1], (EmphasisPair, BREAK_Object)):
+                    return [BREAK_Object(), children[1]]
+                elif isinstance(children[1], list):
+                    children[1].insert(0, BREAK_Object())
+                    return children[1]
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+        def text(self, children: list[lark.lexer.Token|lark.tree.Tree|list[EmphasisPair|BREAK_Object]]) -> list[EmphasisPair|BREAK_Object]:
+            if len(children) == 1:
+                if children[0] is None:
+                    return lark.visitors.Discard
+                elif isinstance(children[0], str):
+                    return [EmphasisPair(children[0])]
+                elif isinstance(children[0], list):
+                    return children[0]
+                elif isinstance(children[0], EmphasisPair):
+                    return [children[0]]
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+            elif isinstance(children[1][0], BREAK_Object):
+                if children[0] is None:
+                    return children[1]
+                elif isinstance(children[0], str):
+                    return [EmphasisPair(children[0])] + children[1]
+                elif isinstance(children[0], list):
+                    return children[0] + children[1]
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+            elif isinstance(children[1][0], EmphasisPair):
+                if children[0] is None:
+                    return children[1]
+                elif isinstance(children[0], str):
+                    tmp = EmphasisPair(children[0])
+                    if tmp.multipliers == children[1][0].multipliers:
+                        children[1][0].text = children[0] + children[1][0].text
+                        return children[1]
+                    else:
+                        return [tmp] + children[1]
+                elif isinstance(children[0], list):
+                    return children[0] + children[1]
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+            else:
+                raise Exception('Unexpected type given.', str(children[1][0]))
+        def escaped(self, children: list[EmphasisPair|BREAK_Object|list]):
+            if len(children) == 1:
+                return EmphasisPair(children[0])
+            else:
+                if isinstance(children[1], (EmphasisPair, BREAK_Object)):
+                    return [EmphasisPair(children[0]), children[1]]
+                elif isinstance(children[1], list):
+                    children[1].insert(0, EmphasisPair(children[0]))
+                    return children[1]
+                else:
+                    raise Exception('Unexpected type given.', str(children[1]))
+        def emphasis(self, children: list[EmphasisPair|BREAK_Object|list|Multiplier]):
+            if isinstance(children[0], (EmphasisPair, BREAK_Object)):
+                children[0].multipliers = list(children[1::2]) + children[0].multipliers
+            elif isinstance(children[0], list):
+                for i in range(len(children[0])):
+                    apply_multiplier([children[0][i]], list(children[1::2]))
+            else:
+                raise Exception('Unexpected type given.', str(children[0]))
+            if len(children) % 2 == 0:
+                return children[0]
+            else:
+                if isinstance(children[0], (EmphasisPair, BREAK_Object)):
+                    if isinstance(children[-1], (EmphasisPair, BREAK_Object)):
+                        return [children[0], children[-1]]
+                    elif isinstance(children[-1], list):
+                        children[-1].insert(0, children[0])
+                        return children[-1]
+                    else:
+                        raise Exception('Unexpected type given.', str(children[-1]))
+                elif isinstance(children[0], list):
+                    if isinstance(children[-1], (EmphasisPair, BREAK_Object)):
+                        children[0].append(children[-1])
+                        return children[0]
+                    elif isinstance(children[-1], list):
+                        return children[0] + children[-1]
+                    else:
+                        raise Exception('Unexpected type given.', str(children[-1]))
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+        def multiplier1(self, children: list[lark.lexer.Token]):
+            if children[0] is None:
+                children[0] = 1.0
+            if children[2] is None:
+                children[2] = "c"
+            if children[3] is None:
+                children[3] = 0.0
+            return Multiplier(children[0]*children[1], children[2], children[3], children[4:])
+        def multiplier2(self, children: list[lark.lexer.Token]):
+            if children[0] is None:
+                children[0] = 1.0
+            if children[4] is None:
+                children[4] = "c"
+            if children[5] is None:
+                children[5] = 0.0
+            return Multiplier(children[0]*children[2]*children[3], children[4], children[5], children[6:])
+        def sign(self, children: list[lark.lexer.Token]):
+            match children[0]:
+                case "+":
+                    return 1.0
+                case "-":
+                    return -1.0
+                case _:
+                    raise Exception(f'Unknown sign symbol "{children[0]}" encountered.')
+        def key(self, children: list[lark.lexer.Token]):
+            return children[0]
+        def float(self, children: list[lark.lexer.Token]):
+            return float(children[0])
+        def option(self, children: list[lark.lexer.Token]):
+            return (children[0], children[1])
+        def op(self, children: list[lark.lexer.Token|lark.tree.Tree|EmphasisPair]):
+            if len(children) == 0:
+                return EmphasisPair("", [Multiplier(1.1)])
+            else:
+                if isinstance(children[0], str):
+                    return EmphasisPair(children[0], [Multiplier(1.1)])
+                elif isinstance(children[0], lark.tree.Tree):
+                    raise Exception(f'Unexpected tree given.', str(children[0]))
+                elif isinstance(children[0], (EmphasisPair, BREAK_Object)):
+                    children[0].multipliers.insert(0, Multiplier(1.1))
+                    return children[0]
+                elif isinstance(children[0], list):
+                    for i in range(len(children[0])):
+                        apply_multiplier([children[0][i]], [Multiplier(1.1)])
+                    return children[0]
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+        def cp(self, children: list[lark.lexer.Token|lark.tree.Tree|EmphasisPair]):
+            if len(children) == 0:
+                return EmphasisPair("", [Multiplier(1.0/1.1)])
+            else:
+                if isinstance(children[0], str):
+                    return EmphasisPair(children[0], [Multiplier(1.0/1.1)])
+                elif isinstance(children[0], lark.tree.Tree):
+                    raise Exception(f'Unexpected tree given.', str(children[0]))
+                elif isinstance(children[0], (EmphasisPair, BREAK_Object)):
+                    children[0].multipliers.insert(0, Multiplier(1.0/1.1))
+                    return children[0]
+                elif isinstance(children[0], list):
+                    for i in range(len(children[0])):
+                        apply_multiplier([children[0][i]], [Multiplier(1.0/1.1)])
+                    return children[0]
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+        def ob(self, children: list[lark.lexer.Token|lark.tree.Tree|EmphasisPair]):
+            if len(children) == 0:
+                return EmphasisPair("", [Multiplier(1.0/1.1)])
+            else:
+                if isinstance(children[0], str):
+                    return EmphasisPair(children[0], [Multiplier(1.0/1.1)])
+                elif isinstance(children[0], lark.tree.Tree):
+                    raise Exception(f'Unexpected tree given.', str(children[0]))
+                elif isinstance(children[0], (EmphasisPair, BREAK_Object)):
+                    children[0].multipliers.insert(0, Multiplier(1.0/1.1))
+                    return children[0]
+                elif isinstance(children[0], list):
+                    for i in range(len(children[0])):
+                        apply_multiplier([children[0][i]], [Multiplier(1.0/1.1)])
+                    return children[0]
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+        def cb(self, children: list[lark.lexer.Token|lark.tree.Tree|EmphasisPair|BREAK_Object|list]):
+            if len(children) == 0:
+                return EmphasisPair("", [Multiplier(1.1)])
+            else:
+                if isinstance(children[0], str):
+                    return EmphasisPair(children[0], [Multiplier(1.1)])
+                elif isinstance(children[0], lark.tree.Tree):
+                    raise Exception(f'Unexpected tree given.', str(children[0]))
+                elif isinstance(children[0], (EmphasisPair, BREAK_Object)):
+                    children[0].multipliers.insert(0, Multiplier(1.1))
+                    return children[0]
+                elif isinstance(children[0], list):
+                    for i in range(len(children[0])):
+                        apply_multiplier([children[0][i]], [Multiplier(1.1)])
+                    return children[0]
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+        def break2(self, children: list[list[EmphasisPair|BREAK_Object]]):
+            if len(children) == 0:
+                return [BREAK_Object()]
+            else:
+                if isinstance(children[0], list):
+                    children[0].insert(0, BREAK_Object())
+                    return children[0]
+                else:
+                    raise Exception('Unexpected type given.', str(children[0]))
+        def break3(self, children):
+            return [BREAK_Object()]
         
     root = Preprocess().transform(root)
-    multiplier = [[Multiplier()]]
-
-    class Parser(lark.visitors.Interpreter):
-        def start(self, tree: lark.tree.Tree):
-            for i in tree.children:
-                Parser().visit(i)
-        def text1(self, tree: lark.tree.Tree):
-            for i in tree.children:
-                if isinstance(i, lark.tree.Tree):
-                    Parser().visit(i)
-                elif isinstance(i, lark.lexer.Token):
-                    emphasis_pairs.append(EmphasisPair(i, multiplier))
-        def text2(self, tree: lark.tree.Tree):
-            for i in tree.children:
-                if isinstance(i, lark.tree.Tree):
-                    Parser().visit(i)
-                elif isinstance(i, lark.lexer.Token):
-                    emphasis_pairs.append(EmphasisPair(i, multiplier))
-        def emphasis(self, tree: lark.tree.Tree):
-            multiplier_this = []
-            multiplier_this.append(Multiplier(float(tree.children[2].children[0]), tree.children[2].children[1] or "c", float(tree.children[2].children[2] or 0.0)))
-            for i in tree.children[4::2]:
-                multiplier_this.append(Multiplier(float(i.children[0]), i.children[1] or "c", float(i.children[2] or 0.0)))
-            multiplier.append(multiplier_this)
-            Parser().visit(tree.children[0])
-            multiplier.pop()
-        def other(self, tree: lark.tree.Tree):
-            tokens = []
-            for i in tree.children:
-                tokens.append(i)
-            emphasis_pairs.append(EmphasisPair(str.join("", tokens), multiplier))
-        def op(self, tree: lark.tree.Tree):
-            multiplier.append([Multiplier(1.1, "c", 0.0)])
-        def cp(self, tree: lark.tree.Tree):
-            multiplier.append([Multiplier(1.0 / 1.1, "c", 0.0)])
-        def ob(self, tree: lark.tree.Tree):
-            multiplier.append([Multiplier(1.0 / 1.1, "c", 0.0)])
-        def cb(self, tree: lark.tree.Tree):
-            multiplier.append([Multiplier(1.1, "c", 0.0)])
-        def break1(self, tree: lark.tree.Tree):
-            tokens = []
-            for i in tree.children:
-                i = str.strip(i)
-                tokens.append(i)
-            emphasis_pairs.append(EmphasisPair(str.join("", tokens), multiplier))
-        def break2(self, tree: lark.tree.Tree):
-            tokens = []
-            for i in tree.children:
-                i = str.strip(i)
-                tokens.append(i)
-            emphasis_pairs.append(EmphasisPair(str.join("", tokens), multiplier))
-
-    def flatten_multipliers(emphasis_pairs: list[EmphasisPair]) -> list[EmphasisPair]:
-        for emphasis_pair in emphasis_pairs:
-            multiplier_list: list[Multiplier] = []
-            for multipliers in emphasis_pair.multipliers:
-                for multiplier in multipliers:
-                    multiplier_list.append(multiplier)
-            emphasis_pair.multipliers = multiplier_list
-        return emphasis_pairs
-
-    Parser().visit(root)
-    emphasis_pairs = flatten_multipliers(emphasis_pairs)
-    return emphasis_pairs
+    return root
 
 
-# a = (parse_prompt_attention(r"BREAK (tes\t\(  BREAK   :1+2k3. + .4r5.6) BREAK"))
+#a = (parse_prompt_attention(r"BREAK test\:test)(tes\t\(  aBREAK  ((abc BREAK d)e]f :1+2k3. + -.4r5.6b1b1)) BREAK"))
 # print(a)

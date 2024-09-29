@@ -1,7 +1,7 @@
 import math
 import torch
 
-from backend.text_processing.classic_engine import CLIPEmbeddingForTextualInversion, PromptChunk, PromptChunkFix
+from backend.text_processing.classic_engine import CLIPEmbeddingForTextualInversion, PromptChunkFix
 from backend.text_processing.textual_inversion import EmbeddingDatabase
 from backend import memory_management
 
@@ -9,12 +9,53 @@ from scripts import emphasis, parsing
 
 last_extra_generation_params = {}
 
+class PromptChunk:
+    def __init__(self):
+        self.tokens = []
+        self.multipliers: list[parsing.EmphasisPair] = []
+        self.fixes = []
+
+class CLIPEmbeddingForTextualInversionTopKEmphasis(torch.nn.Module):
+    def __init__(self, token_embedding: CLIPEmbeddingForTextualInversion, emphasis_view_update, debug):
+        super().__init__()
+        self.wrapped = token_embedding.wrapped
+        self.embeddings = token_embedding.embeddings
+        self.textual_inversion_key = token_embedding.textual_inversion_key
+        self.weight = token_embedding.weight
+        self.emphasis_view_update = emphasis_view_update
+        self.debug = debug
+
+    def forward(self, input_ids):
+        batch_fixes = self.embeddings.fixes
+        self.embeddings.fixes = None
+
+        inputs_embeds = self.wrapped(input_ids)
+
+        if batch_fixes is None or len(batch_fixes) == 0 or max([len(x) for x in batch_fixes]) == 0:
+            return emphasis.emphasis_b(inputs_embeds, self.batch_multipliers, self.emphasis_view_update, self.textual_inversion_key, self.debug)
+
+        vecs = []
+        for fixes, tensor in zip(batch_fixes, inputs_embeds):
+            for offset, embedding in fixes:
+                emb = embedding.vec[self.textual_inversion_key] if isinstance(embedding.vec, dict) else embedding.vec
+                emb = emb.to(inputs_embeds)
+                emb_len = min(tensor.shape[0] - offset - 1, emb.shape[0])
+                tensor = torch.cat([tensor[0:offset + 1], emb[0:emb_len], tensor[offset + 1 + emb_len:]]).to(dtype=inputs_embeds.dtype)
+
+            vecs.append(tensor)
+
+        z = torch.stack(vecs)
+
+        return emphasis.emphasis_b(z, self.batch_multipliers, self.emphasis_view_update, self.textual_inversion_key, self.debug)
+
 class ClassicTextProcessingEngineTopKEmphasis:
     def __init__(
             self, text_encoder, tokenizer, chunk_length=75,
-            embeddings=None, embedding_key='clip_l', token_embedding=None, emphasis_name="Original",
-            text_projection=False, minimal_clip_skip=1, clip_skip=1, return_pooled=False, final_layer_norm=True
+            embeddings=None, embedding_key='clip_l', token_embedding=None, emphasis_view_update=False,
+            text_projection=False, minimal_clip_skip=1, clip_skip=1, return_pooled=False, final_layer_norm=True,
+            manual_mode=False, debug=False, 
     ):
+        """manuak_mode: You will have to add "<|startoftext|>" at beginnning of pormpt."""
         super().__init__()
 
         self.embeddings = embeddings
@@ -24,7 +65,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
 
-        self.emphasis = emphasis.TopKEmphasis()
+        self.emphasis = emphasis.TopKEmphasis(emphasis_view_update, debug, embedding_key)
         self.text_projection = text_projection
         self.minimal_clip_skip = minimal_clip_skip
         self.clip_skip = clip_skip
@@ -38,7 +79,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
         self.id_pad = self.tokenizer.pad_token_id
 
         model_embeddings = text_encoder.transformer.text_model.embeddings
-        model_embeddings.token_embedding = token_embedding
+        model_embeddings.token_embedding = CLIPEmbeddingForTextualInversionTopKEmphasis(token_embedding, emphasis_view_update, debug)
 
         vocab = self.tokenizer.get_vocab()
 
@@ -62,6 +103,10 @@ class ClassicTextProcessingEngineTopKEmphasis:
             if mult != 1.0:
                 self.token_mults[ident] = mult
 
+        self.manual_mode = manual_mode
+        self.emphasis_view_update = emphasis_view_update
+        self.debug = debug
+
     def empty_chunk(self):
         chunk = PromptChunk()
         chunk.tokens = [self.id_start] + [self.id_end] * (self.chunk_length + 1)
@@ -76,7 +121,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
 
         return tokenized
 
-    def encode_with_transformers(self, tokens):
+    def encode_with_transformers(self, tokens, batch_multipliers):
         target_device = memory_management.text_encoder_device()
 
         self.text_encoder.transformer.text_model.embeddings.position_ids = self.text_encoder.transformer.text_model.embeddings.position_ids.to(device=target_device)
@@ -85,6 +130,7 @@ class ClassicTextProcessingEngineTopKEmphasis:
 
         tokens = tokens.to(target_device)
 
+        self.text_encoder.transformer.text_model.embeddings.token_embedding.batch_multipliers = batch_multipliers
         outputs = self.text_encoder.transformer(tokens, output_hidden_states=True)
 
         layer_id = - max(self.clip_skip, self.minimal_clip_skip)
@@ -122,22 +168,20 @@ class ClassicTextProcessingEngineTopKEmphasis:
             if is_last:
                 token_count += len(chunk.tokens)
             else:
-                token_count += self.chunk_length
+                token_count += self.chunk_length if not self.manual_mode else self.chunk_length + 2
 
-            to_add = self.chunk_length - len(chunk.tokens)
+            to_add = (self.chunk_length - len(chunk.tokens)) if not self.manual_mode else self.chunk_length + 2 - len(chunk.tokens) 
             if to_add > 0:
                 chunk.tokens += [self.id_end] * to_add
-                chunk.multipliers += [parsing.EmphasisPair()] * to_add
 
-            chunk.tokens = [self.id_start] + chunk.tokens + [self.id_end]
-            chunk.multipliers = [parsing.EmphasisPair()] + chunk.multipliers + [parsing.EmphasisPair()]
+            chunk.tokens = ([self.id_start] + chunk.tokens + [self.id_end]) if not self.manual_mode else chunk.tokens
 
             last_comma = -1
             chunks.append(chunk)
             chunk = PromptChunk()
 
         for tokens, weight in zip(tokenized, parsed):
-            if weight.text == 'BREAK':
+            if isinstance(weight, parsing.BREAK_Object):
                 next_chunk()
                 continue
 
@@ -145,43 +189,53 @@ class ClassicTextProcessingEngineTopKEmphasis:
             while position < len(tokens):
                 token = tokens[position]
 
-                comma_padding_backtrack = 20
+                comma_padding_backtrack = 20 if not self.manual_mode else 21
 
                 if token == self.comma_token:
                     last_comma = len(chunk.tokens)
 
-                elif comma_padding_backtrack != 0 and len(chunk.tokens) == self.chunk_length and last_comma != -1 and len(chunk.tokens) - last_comma <= comma_padding_backtrack:
+                elif comma_padding_backtrack != 0 and len(chunk.tokens) == (self.chunk_length if not self.manual_mode else self.chunk_length + 2) and last_comma != -1 and len(chunk.tokens) - last_comma <= comma_padding_backtrack:
                     break_location = last_comma + 1
 
                     reloc_tokens = chunk.tokens[break_location:]
-                    reloc_mults = chunk.multipliers[break_location:]
-
                     chunk.tokens = chunk.tokens[:break_location]
-                    chunk.multipliers = chunk.multipliers[:break_location]
+
+                    reloc_weights = [weight for weight in chunk.multipliers if weight.begin > break_location]
+                    chunk.multipliers = [weight for weight in chunk.multipliers if weight.begin <= break_location]
+                    for i in range(len(reloc_weights)):
+                        reloc_weights[i].begin -= break_location
+                        reloc_weights[i].end -= break_location
 
                     next_chunk()
                     chunk.tokens = reloc_tokens
-                    chunk.multipliers = reloc_mults
+                    chunk.multipliers = reloc_weights
+                    weight.begin = 1 if not self.manual_mode else 0
 
-                if len(chunk.tokens) == self.chunk_length:
+                if len(chunk.tokens) == (self.chunk_length if not self.manual_mode else self.chunk_length + 2):
                     next_chunk()
 
                 embedding, embedding_length_in_tokens = self.embeddings.find_embedding_at_position(tokens, position)
                 if embedding is None:
+                    if position == 0:
+                        weight.begin = len(chunk.tokens) + 1 if not self.manual_mode else len(chunk.tokens)
                     chunk.tokens.append(token)
-                    chunk.multipliers.append(weight)
                     position += 1
+                    if position == len(tokens):
+                        weight.end = len(chunk.tokens) + 1 if not self.manual_mode else len(chunk.tokens)
+                        chunk.multipliers.append(weight)
                     continue
 
                 emb_len = int(embedding.vectors)
-                if len(chunk.tokens) + emb_len > self.chunk_length:
+                if len(chunk.tokens) + emb_len > (self.chunk_length if not self.manual_mode else self.chunk_length + 2):
                     next_chunk()
 
                 chunk.fixes.append(PromptChunkFix(len(chunk.tokens), embedding))
 
+                weight.begin = len(chunk.tokens) + 1 if not self.manual_mode else len(chunk.tokens)
                 chunk.tokens += [0] * emb_len
-                chunk.multipliers += [weight] * emb_len
+                weight.end = len(chunk.tokens) + 1 if not self.manual_mode else len(chunk.tokens)
                 position += embedding_length_in_tokens
+                chunk.multipliers.append(weight)
 
         if chunk.tokens or not chunks:
             next_chunk(is_last=True)
@@ -256,10 +310,13 @@ class ClassicTextProcessingEngineTopKEmphasis:
 
         if self.id_end != self.id_pad:
             for batch_pos in range(len(remade_batch_tokens)):
-                index = remade_batch_tokens[batch_pos].index(self.id_end)
-                tokens[batch_pos, index + 1:tokens.shape[1]] = self.id_pad
+                try:
+                    index = remade_batch_tokens[batch_pos].index(self.id_end)
+                    tokens[batch_pos, index + 1:tokens.shape[1]] = self.id_pad
+                except ValueError:
+                    pass
 
-        z = self.encode_with_transformers(tokens)
+        z = self.encode_with_transformers(tokens, batch_multipliers)
 
         pooled = getattr(z, 'pooled', None)
 

@@ -1,3 +1,4 @@
+from math import e
 import gradio
 from regex import W
 import torch
@@ -13,6 +14,7 @@ from backend import memory_management
 from backend.args import args, dynamic_args
 from backend.attention import attention_function
 
+from scripts import emphasis
 from scripts.classic_engine import ClassicTextProcessingEngineTopKEmphasis
 from scripts.parsing import EmphasisPair
 import scripts.prompt_parser as prompt_parser
@@ -39,14 +41,11 @@ class TopKEmphasis(modules.scripts.Script):
     get_learned_conditioning_sdxl_original = None
     positive_multiplier = None
     negative_multiplier = None
-    current_step_q_mul = None
-    current_step_q_thres = None
-    current_step_k_mul = None
-    current_step_k_thres = None
-    current_step_v_mul = None
-    current_step_v_thres = None
-    current_step_s_mul = None
-    current_step_s_thres = None
+    reconstructed_positive_multiplier = None
+    reconstructed_negative_multiplier = None
+    crossattentioncounter = 0
+    emphasis_view_update = False
+    debug = False
 
     def __init__(self) -> None:
         super().__init__()
@@ -62,9 +61,14 @@ class TopKEmphasis(modules.scripts.Script):
             with gradio.Row():
                 active = gradio.Checkbox(value=False, label="Enable Top K Emphasis")
                 extra_mode = gradio.Checkbox(value=False, label="Enbale Extra Mode")
-        return [active, extra_mode]
+            with gradio.Row():
+                manual_mode = gradio.Checkbox(value=False, label="Disallow to automatically add start token")
+                emphasis_view_update = gradio.Checkbox(value=False, label="Update view on every emphasis")
+            with gradio.Row():
+                debug = gradio.Checkbox(value=False, label="Debug mode")
+        return [active, extra_mode, manual_mode, emphasis_view_update, debug]
     
-    def before_process(self, p: StableDiffusionProcessing, active, *args, **kwargs):
+    def before_process(self, p: StableDiffusionProcessing, active, extra_mode, manual_mode, emphasis_view_update, debug, *args, **kwargs):
         if not active: return
         print("Loading Top K Emphasis.")
         if hasattr(p.sd_model, "text_processing_engine"):
@@ -77,14 +81,18 @@ class TopKEmphasis(modules.scripts.Script):
                     embeddings=p.sd_model.text_processing_engine.embeddings,
                     embedding_key='clip_l',
                     token_embedding=p.sd_model.text_processing_engine.text_encoder.transformer.text_model.embeddings.token_embedding,
-                    emphasis_name=dynamic_args['emphasis_name'],
                     text_projection=False,
                     minimal_clip_skip=1,
                     clip_skip=1,
                     return_pooled=False,
                     final_layer_norm=True,
+                    manual_mode=manual_mode,
+                    emphasis_view_update=emphasis_view_update,
+                    debug=debug,
                 )
-            hook_forwards(TopKEmphasis, p.sd_model.forge_objects.unet.model, False)
+            hook_forwards(p.sd_model.forge_objects.unet.model, False)
+            TopKEmphasis.emphasis_view_update = emphasis_view_update
+            TopKEmphasis.debug = debug
         elif hasattr(p.sd_model, "text_processing_engine_l") and hasattr(p.sd_model, "text_processing_engine_g"):
             TopKEmphasis.model_type = "SDXL"
             TopKEmphasis.text_processing_engine_l_original = p.sd_model.text_processing_engine_l
@@ -95,12 +103,14 @@ class TopKEmphasis(modules.scripts.Script):
                     embeddings=p.sd_model.text_processing_engine_l.embeddings,
                     embedding_key='clip_l',
                     token_embedding=p.sd_model.text_processing_engine_l.text_encoder.transformer.text_model.embeddings.token_embedding,
-                    emphasis_name=dynamic_args['emphasis_name'],
                     text_projection=False,
                     minimal_clip_skip=2,
                     clip_skip=2,
                     return_pooled=False,
                     final_layer_norm=False,
+                    manual_mode=manual_mode,
+                    emphasis_view_update=emphasis_view_update,
+                    debug=debug,
                 )
             TopKEmphasis.text_processing_engine_g_original = p.sd_model.text_processing_engine_g
             if not isinstance(p.sd_model.text_processing_engine_g, ClassicTextProcessingEngineTopKEmphasis):
@@ -110,16 +120,20 @@ class TopKEmphasis(modules.scripts.Script):
                     embeddings=p.sd_model.text_processing_engine_g.embeddings,
                     embedding_key='clip_g',
                     token_embedding=p.sd_model.text_processing_engine_g.text_encoder.transformer.text_model.embeddings.token_embedding,
-                    emphasis_name=dynamic_args['emphasis_name'],
                     text_projection=True,
                     minimal_clip_skip=2,
                     clip_skip=2,
                     return_pooled=True,
                     final_layer_norm=False,
+                    manual_mode=manual_mode,
+                    emphasis_view_update=emphasis_view_update,
+                    debug=debug,
                 )
             TopKEmphasis.get_learned_conditioning_sdxl_original = p.sd_model.get_learned_conditioning
             p.sd_model.get_learned_conditioning = get_learned_conditioning_sdxl
-            hook_forwards(TopKEmphasis, p.sd_model.forge_objects.unet.model, False)
+            hook_forwards(p.sd_model.forge_objects.unet.model, False)
+            TopKEmphasis.emphasis_view_update = emphasis_view_update
+            TopKEmphasis.debug = debug
         else:
             raise Exception("Unsupported model type.")
 
@@ -133,17 +147,9 @@ class TopKEmphasis(modules.scripts.Script):
     def process_before_every_sampling(self, p: StableDiffusionProcessing, active, extra_mode, *args, **kwargs):
         if not active: return
         TopKEmphasis.extra_mode = extra_mode
-        pm = prompt_parser.reconstruct_multi_multiplier_batch(TopKEmphasis.positive_multiplier, p.steps)
-        nm = prompt_parser.reconstruct_multiplier_batch(TopKEmphasis.negative_multiplier, p.steps) if TopKEmphasis.negative_multiplier is not None else None
-        d = len(pm) - len(nm) if nm is not None else 0
-        if d > 0:
-            nm += [EmphasisPair()] * d
-        elif d < 0:
-            pm += [EmphasisPair()] * -d
-        TopKEmphasis.current_step_q_mul, TopKEmphasis.current_step_q_thres = to_structure_of_tensor(pm, nm, "q")
-        TopKEmphasis.current_step_k_mul, TopKEmphasis.current_step_k_thres = to_structure_of_tensor(pm, nm, "k")
-        TopKEmphasis.current_step_v_mul, TopKEmphasis.current_step_v_thres = to_structure_of_tensor(pm, nm, "v")
-        TopKEmphasis.current_step_s_mul, TopKEmphasis.current_step_s_thres = to_structure_of_tensor(pm, nm, "s")
+        TopKEmphasis.reconstructed_positive_multiplier = prompt_parser.reconstruct_multi_multiplier_batch(TopKEmphasis.positive_multiplier, p.steps)
+        TopKEmphasis.reconstructed_negative_multiplier = prompt_parser.reconstruct_multiplier_batch(TopKEmphasis.negative_multiplier, p.steps) if TopKEmphasis.negative_multiplier is not None else None
+        TopKEmphasis.crossattentioncounter = 0
 
     def postprocess(self, p: StableDiffusionProcessing, processed, active, *args):
         if not active: return
@@ -151,7 +157,7 @@ class TopKEmphasis(modules.scripts.Script):
             case "SD1.5":
                 if TopKEmphasis.text_processing_engine_original is not None:
                     p.sd_model.text_processing_engine = TopKEmphasis.text_processing_engine_original
-                hook_forwards(TopKEmphasis, p.sd_model.forge_objects.unet.model, True)
+                hook_forwards(p.sd_model.forge_objects.unet.model, True)
             case "SDXL":
                 if TopKEmphasis.text_processing_engine_l_original is not None:
                     p.sd_model.text_processing_engine_l = TopKEmphasis.text_processing_engine_l_original
@@ -159,7 +165,7 @@ class TopKEmphasis(modules.scripts.Script):
                     p.sd_model.text_processing_engine_g = TopKEmphasis.text_processing_engine_g_original
                 if TopKEmphasis.get_learned_conditioning_sdxl_original is not None:
                     p.sd_model.get_learned_conditioning = TopKEmphasis.get_learned_conditioning_sdxl_original
-                hook_forwards(TopKEmphasis, p.sd_model.forge_objects.unet.model, True)
+                hook_forwards(p.sd_model.forge_objects.unet.model, True)
         print("Unloading Top K Emphasis.")
 
 @torch.inference_mode()
@@ -272,7 +278,7 @@ def to_structure_of_tensor(positive: list[EmphasisPair], negative: list[Emphasis
     else:
         return torch.stack((weight_p, ), dim=1), torch.stack((threshold_p, ), dim=1)
 
-def hook_forward(top_k_emphasis: TopKEmphasis, self):
+def hook_forward(self):
     FORCE_UPCAST_ATTENTION_DTYPE = memory_management.force_upcast_attention_dtype()
 
     def get_attn_precision(attn_precision=torch.float32):
@@ -373,7 +379,10 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
             sim = torch.einsum('b i d, b j d -> b i j', q, k) * scale
 
         del q, k
-        sim = apply_top_k_emphasis2(sim, "q", heads)
+        sim = einops.rearrange(sim, "(i h) l t -> i t (h l)", h=heads)
+        sim = emphasis.emphasis_crossattention(sim, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "q", 
+                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+        sim = einops.rearrange(sim, "i t (h l) -> (i h) l t", h=heads)
 
         if exists(mask):
             if mask.dtype == torch.bool:
@@ -390,7 +399,10 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
                 sim.add_(mask)
 
         sim = sim.softmax(dim=-1)
-        sim = apply_top_k_emphasis2(sim, "s", heads)
+        sim = einops.rearrange(sim, "(i h) l t -> i t (h l)", h=heads)
+        sim = emphasis.emphasis_crossattention(sim, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "s", 
+                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+        sim = einops.rearrange(sim, "i t (h l) -> (i h) l t", h=heads)
         out = torch.einsum('b i j, b j d -> b i d', sim.to(v.dtype), v)
         out = (
             out.unsqueeze(0)
@@ -400,28 +412,51 @@ def hook_forward(top_k_emphasis: TopKEmphasis, self):
         )
         return out
     
-    def forward(x, context=None, value=None, mask=None, transformer_options={}):
+    def forward(x, context: torch.Tensor=None, value=None, mask=None, transformer_options={}):
+        # context is ordered in (uncond_batch0, uncond_batch1, ..., cond_batch0_and-1, cond_batch1_and-1, ..., cond_batch0_and-2, ...) .
+        # if no uncond, context is ordered in (cond_batch0_and-1, cond_batch1_and-1, ..., cond_batch0_and-2, ...) .
+        # batch_size is z.shape[0] / (len(uncond_indices) + len(cond_indicies))
+        # check uncond_indices and cond_indicies in transformer_options .
+        # context = "(uncond_cond batch) token channel"
+        # k = "(uncond_cond batch) token channel"
+        # note that uncond_cond can be non-rectangular.
+        # if size of tokens is not uniform, last token of short tensor will be broadcasted. i do not care such case.
+        #[[..., 74, 75, 76, 77, 78, 79, ...],
+        # [..., 74, 75, 76, 76, 76, 76, ...]]
         q = self.to_q(x)
         context = default(context, x)
-        k = self.to_k(context)
-        k = apply_top_k_emphasis1(k, "k")
+        context_k = emphasis.emphasis_crossattention(context.clone(), TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "pk", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+        k = self.to_k(context_k)
+        del context_k
+        k = emphasis.emphasis_crossattention(k, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "k", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         if value is not None:
-            v = self.to_v(value)
-            v = apply_top_k_emphasis1(v, "v")
+            value_v = emphasis.emphasis_crossattention(value.clone(), TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "pv", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+            v = self.to_v(value_v)
+            del value_v
+            v = emphasis.emphasis_crossattention(v, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "v", 
+                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
             del value
         else:
-            v = self.to_v(context)
-            v = apply_top_k_emphasis1(v, "v")
+            context_v = emphasis.emphasis_crossattention(context.clone(), TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "pv", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+            v = self.to_v(context_v)
+            del context_v
+            v = emphasis.emphasis_crossattention(v, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "v", 
+                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         if TopKEmphasis.extra_mode:
             out = cross_attension(q, k, v, self.heads, mask, transformer_options=transformer_options)
         else:
             out = attention_function(q, k, v, self.heads, mask)
+        TopKEmphasis.crossattentioncounter += 1
         return self.to_out(out)
     return forward
 
-def hook_forwards(top_k_emphasis: TopKEmphasis, root_module: torch.nn.Module, remove=False):
+def hook_forwards(root_module: torch.nn.Module, remove=False):
     for name, module in root_module.named_modules():
         if "attn2" in name and module.__class__.__name__ == "CrossAttention":
-            module.forward = hook_forward(top_k_emphasis, module)
+            module.forward = hook_forward(module)
             if remove:
                 del module.forward
