@@ -1,5 +1,8 @@
 import math
+from matplotlib.dates import WE
+from regex import W
 import torch
+from torchmetrics import WeightedMeanAbsolutePercentageError
 
 from backend.text_processing.classic_engine import CLIPEmbeddingForTextualInversion, PromptChunkFix
 from backend.text_processing.textual_inversion import EmbeddingDatabase
@@ -183,6 +186,10 @@ class ClassicTextProcessingEngineTopKEmphasis:
         for tokens, weight in zip(tokenized, parsed):
             if isinstance(weight, parsing.BREAK_Object):
                 next_chunk()
+                continue
+
+            if isinstance(weight, parsing.CHANNEL_Object):
+                chunk.multipliers.append(weight)
                 continue
 
             position = 0

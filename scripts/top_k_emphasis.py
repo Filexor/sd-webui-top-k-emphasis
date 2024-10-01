@@ -405,6 +405,8 @@ def hook_forward(self):
         sim = emphasis.emphasis_crossattention2(sim, heads, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, ["s", "sl", "sh"], 
                                     TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         out = torch.einsum('b i j, b j d -> b i d', sim.to(v.dtype), v)
+        out = emphasis.emphasis_crossattention2(out, heads, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, ["o", "ol", "oh"], 
+                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         out = (
             out.unsqueeze(0)
             .reshape(b, heads, -1, dim_head)
@@ -449,10 +451,16 @@ def hook_forward(self):
                                     TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         if TopKEmphasis.extra_mode:
             out = cross_attension(q, k, v, self.heads, mask, transformer_options=transformer_options)
+            t = self.to_out(out)
+            t = einops.rearrange(t, "i l (h c) -> (i h) c l", h=self.heads)
+            t = emphasis.emphasis_crossattention2(t, self.heads, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, ["t", "tl", "th"], 
+                                                    TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
+            t = einops.rearrange(t, "(i h) c l -> i l (h c)", h=self.heads)
         else:
             out = attention_function(q, k, v, self.heads, mask)
+            t = self.to_out(out)
         TopKEmphasis.crossattentioncounter += 1
-        return self.to_out(out)
+        return t
     return forward
 
 def hook_forwards(root_module: torch.nn.Module, remove=False):

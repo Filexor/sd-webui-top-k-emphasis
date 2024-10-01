@@ -9,7 +9,7 @@ The syntax is like this:
 
 `"(" <text> ":" ("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]] [("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]]]+ ")"`
 
-There are 16 types of key:
+There are 22 types of key:
 - "b": Emphasis will be applied after enumeration of embeddings.
 - "bl": similar to "b", but only for "clip_l". Both SD1.5 and SDXL uses "clip_l".
 - "bg": similar to "b", but only for "clip_g". SDXL also uses "clip_g".
@@ -26,10 +26,19 @@ There are 16 types of key:
 - "s": Similar to "q" but applied after softmax. Heads and latent will be sorted for thresholding.
 - "sl": Similar to "s" but only latent elements will be sorted for thresholding.
 - "sh": Similar to "s" but only heads will be sorted for thresholding.
+- "o": Emphasis will be applied after each `torch.einsum('b i j, b j d -> b i d', sim, v)` in cross attention where sim is out put of "s".
+Heads and latent elements will be sorted for thresholding.
+- "ol": Similar to "o" but only latent elements will be sorted for thresholding.
+- "oh": Similar to "o" but only heads will be sorted for thresholding.
+- "t": Emphasis will be applied after to_out. Heads and latent will be sorted for thresholding.
+- "tl": Similar to "t" but only latent elements will be sorted for thresholding.
+- "th": Similar to "t" but only heads will be sorted for thresholding.
 
 If you omit key, it will be interpreted as "c".
 
-Note that using "q", "qh", "ql", "s", "sh", "sl" requires to enable Extra Mode which makes slower because of disabling optimizations.
+Note that using "q", "qh", "ql", "s", "sh", "sl", "o", "ol", "oh", "t", "tl", "th" requires to enable Extra Mode which makes slower because of disabling optimizations.
+For "o", "ol", "oh", "t", "tl", "th", use following syntax. Otherwise, position of token is used as range of channels.
+`"( CHANNEL" [<start_of_channel>] : [<end_of_channel>] ":" ("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]] [("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]]]+ ")"`
 
 Threshold has 3 ways of interpretations:
 - Threshold equal to 0 means all of channels will be multiplied.

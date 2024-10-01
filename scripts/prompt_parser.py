@@ -6,7 +6,7 @@ from collections import namedtuple
 import lark
 import torch
 
-from scripts.parsing import EmphasisPair
+from scripts.parsing import EmphasisPair, CHANNEL_Object
 
 # a prompt like this: "fantasy landscape with a [mountain:lake:0.25] and [an oak:a christmas tree:0.75][ in foreground::0.6][: in background:0.25] [shoddy:masterful:0.5]"
 # will be represented with prompt_schedule like this (assuming steps=100):
@@ -406,8 +406,9 @@ def reconstruct_multiplier_batch(c: list[list[ScheduledPromptConditioning]], cur
         for j in i:
             for k in j:
                 for l in k:
-                    l.begin += chunk_count * 77
-                    l.end += chunk_count * 77
+                    if not isinstance(l, CHANNEL_Object):
+                        l.begin += chunk_count * 77
+                        l.end += chunk_count * 77
                     flattened.append(l)
                 chunk_count += 1
         flattened_batch.append(flattened)
@@ -440,8 +441,9 @@ def reconstruct_multi_multiplier_batch(c: MulticondLearnedConditioning, current_
             for k in j:
                 for l in k:
                     for m in l:
-                        m.begin += chunk_count * 77
-                        m.end += chunk_count * 77
+                        if not isinstance(m, CHANNEL_Object):
+                            m.begin += chunk_count * 77
+                            m.end += chunk_count * 77
                         flattened.append(m)
                     chunk_count += 1
             flattened_and.append(flattened)
