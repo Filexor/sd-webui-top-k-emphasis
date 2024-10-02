@@ -175,7 +175,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_sel = z_des[:, thres_top]
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         z_asc = z_des.flip([-1])
-                                        z_des_sel = z_des[:, thres_bottom]
+                                        z_asc_sel = z_asc[:, thres_bottom]
                                         z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = (self.z[i, begin:end, :] >= z_des_exp) | (self.z[i, begin:end, :] <= z_asc_exp)
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
@@ -235,7 +235,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_sel = z_des[:, thres_top]
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         z_asc = z_des.flip([-1])
-                                        z_des_sel = z_des[:, thres_bottom]
+                                        z_asc_sel = z_asc[:, thres_bottom]
                                         z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = (self.z[i, begin:end, :] < z_des_exp) & (self.z[i, begin:end, :] > z_asc_exp)
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
@@ -259,7 +259,7 @@ class TopKEmphasis(Emphasis):
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     target = (self.z[i, begin:end, :] < z_des_exp) & (self.z[i, begin:end, :] > z_asc_exp)
                                     if self.debug: print(target.to(device="cpu").nonzero().tolist())
@@ -283,7 +283,7 @@ class TopKEmphasis(Emphasis):
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     z_asc = z_des
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     target = (self.z[i, begin:end, :] <= z_des_exp) & (self.z[i, begin:end, :] >= z_asc_exp)
                                     if self.debug: print(target.to(device="cpu").nonzero().tolist())
@@ -424,7 +424,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_sel = z_des[:, thres_top]
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         #z_asc = z_des.flip([-1])
-                                        z_des_sel = z_des[:, thres_bottom]
+                                        z_asc_sel = z_asc[:, thres_bottom]
                                         z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = (self.z[i, begin:end, :] >= z_des_exp) | (self.z[i, begin:end, :] <= z_asc_exp)
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
@@ -484,7 +484,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_sel = z_des[:, thres_top]
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         #z_asc = z_des.flip([-1])
-                                        z_des_sel = z_des[:, thres_bottom]
+                                        z_asc_sel = z_asc[:, thres_bottom]
                                         z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = (self.z[i, begin:end, :] < z_des_exp) & (self.z[i, begin:end, :] > z_asc_exp)
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
@@ -508,7 +508,7 @@ class TopKEmphasis(Emphasis):
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     #z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     target = (self.z[i, begin:end, :] < z_des_exp) & (self.z[i, begin:end, :] > z_asc_exp)
                                     if self.debug: print(target.to(device="cpu").nonzero().tolist())
@@ -699,7 +699,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -759,7 +759,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -783,7 +783,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 z_asc = z_des.flip([-1])
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -807,7 +807,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 z_asc = z_des
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] <= z_des_exp) & (z[i, begin:end, :] >= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -948,7 +948,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     #z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1008,7 +1008,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     #z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1032,7 +1032,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 #z_asc = z_des.flip([-1])
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1200,7 +1200,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1260,7 +1260,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1284,7 +1284,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 z_asc = z_des.flip([-1])
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1308,7 +1308,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 z_asc = z_des
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] <= z_des_exp) & (z[i, begin:end, :] >= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1450,7 +1450,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     #z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1510,7 +1510,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_sel = z_des[:, thres_top]
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     #z_asc = z_des.flip([-1])
-                                    z_des_sel = z_des[:, thres_bottom]
+                                    z_asc_sel = z_asc[:, thres_bottom]
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1534,7 +1534,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 #z_asc = z_des.flip([-1])
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1723,7 +1723,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 z_asc = z_des.flip([-1])
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1783,7 +1783,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 z_asc = z_des.flip([-1])
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1807,7 +1807,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             z_des_sel = z_des[:, thres_top]
                             z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                             z_asc = z_des.flip([-1])
-                            z_des_sel = z_des[:, thres_bottom]
+                            z_asc_sel = z_asc[:, thres_bottom]
                             z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                             target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                             if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1831,7 +1831,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             z_des_sel = z_des[:, thres_top]
                             z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                             z_asc = z_des
-                            z_des_sel = z_des[:, thres_bottom]
+                            z_asc_sel = z_asc[:, thres_bottom]
                             z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                             target = (z[i, begin:end, :] <= z_des_exp) & (z[i, begin:end, :] >= z_asc_exp)
                             if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -1870,23 +1870,17 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
         for i, pairs in enumerate(multipliers):
             for pair in pairs:
                 dim1_size_hl = 1
-                z_hl = einops.rearrange(z, "i h t l -> i t (h l)")
-                begin_hl = 0 if pair.begin is None else int(pair.begin * z_hl.shape[1]) if pair.begin < 1.0 else max(min(int(pair.begin) * dim1_size_hl, z_hl.shape[1]), 0)
-                end_hl = z_hl.shape[1] if pair.end is None else int(pair.end * z_hl.shape[1]) if pair.end < 1.0 else max(min(int(pair.end) * dim1_size_hl, z_hl.shape[1]), 0)
-                z_des_hl = z_hl[i, begin_hl:end_hl, :].sort(dim=-1, descending=True).values
-                z_asc_hl = z_des_hl.flip([-1])
+                z_hl = None
+                begin_hl = 0 if pair.begin is None else int(pair.begin * z.shape[2]) if pair.begin < 1.0 else max(min(int(pair.begin) * dim1_size_hl, z.shape[2]), 0)
+                end_hl = z.shape[2] if pair.end is None else int(pair.end * z.shape[2]) if pair.end < 1.0 else max(min(int(pair.end) * dim1_size_hl, z.shape[2]), 0)
                 dim1_size_l = z.shape[1]
-                z_l = einops.rearrange(z, "i h t l -> i (t h) l")
-                begin_l = 0 if pair.begin is None else int(pair.begin * z_l.shape[1]) if pair.begin < 1.0 else max(min(int(pair.begin) * dim1_size_l, z_l.shape[1]), 0)
-                end_l = z_l.shape[1] if pair.end is None else int(pair.end * z_l.shape[1]) if pair.end < 1.0 else max(min(int(pair.end) * dim1_size_l, z_l.shape[1]), 0)
-                z_des_l = z_l[i, begin_l:end_l, :].sort(dim=-1, descending=True).values
-                z_asc_l = z_des_l.flip([-1])
+                z_l = None
+                begin_l = 0 if pair.begin is None else int(pair.begin * z.shape[2] * dim1_size_l) if pair.begin < 1.0 else max(min(int(pair.begin) * dim1_size_l, z.shape[2] * dim1_size_l), 0)
+                end_l = z.shape[2] * dim1_size_l if pair.end is None else int(pair.end * z.shape[2] * dim1_size_l) if pair.end < 1.0 else max(min(int(pair.end) * dim1_size_l, z.shape[2] * z.shape[1]), 0)
                 dim1_size_h = z.shape[3]
-                z_h = einops.rearrange(z, "i h t l -> i (t l) h")
-                begin_h = 0 if pair.begin is None else int(pair.begin * z_h.shape[1]) if pair.begin < 1.0 else max(min(int(pair.begin) * dim1_size_h, z_h.shape[1]), 0)
-                end_h = z_h.shape[1] if pair.end is None else int(pair.end * z_h.shape[1]) if pair.end < 1.0 else max(min(int(pair.end) * dim1_size_h, z_h.shape[1]), 0)
-                z_des_h = z_h[i, begin_h:end_h, :].sort(dim=-1, descending=True).values
-                z_asc_h = z_des_h.flip([-1])
+                z_h = None
+                begin_h = 0 if pair.begin is None else int(pair.begin * z.shape[2] * dim1_size_h) if pair.begin < 1.0 else max(min(int(pair.begin) * dim1_size_h, z.shape[2] * dim1_size_h), 0)
+                end_h = z.shape[2] * dim1_size_h if pair.end is None else int(pair.end * z.shape[2] * dim1_size_h) if pair.end < 1.0 else max(min(int(pair.end) * dim1_size_h, z.shape[2] * dim1_size_h), 0)
                 for multiplier in pair.multipliers:
                     if multiplier.key not in keys:
                         continue
@@ -1930,6 +1924,10 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                         continue
                     if multiplier.key == keys[0]:
                         # "q", "s"
+                        if z_hl is None:
+                            z_hl = einops.rearrange(z, "i h t l -> i t (h l)")
+                            z_des_hl = z_hl[i, begin_hl:end_hl, :].sort(dim=-1, descending=True).values
+                            z_asc_hl = z_des_hl.flip([-1])
                         dim1_size = dim1_size_hl
                         begin = begin_hl
                         end = end_hl
@@ -1938,6 +1936,10 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                         z_asc = z_asc_hl
                     elif multiplier.key == keys[1]:
                         # "ql", "sl"
+                        if z_l is None:
+                            z_l = einops.rearrange(z, "i h t l -> i (t h) l")
+                            z_des_l = z_l[i, begin_l:end_l, :].sort(dim=-1, descending=True).values
+                            z_asc_l = z_des_l.flip([-1])
                         dim1_size = dim1_size_l
                         begin = begin_l
                         end = end_l
@@ -1946,6 +1948,10 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                         z_asc = z_asc_l
                     elif multiplier.key == keys[2]:
                         # "qh", "sh"
+                        if z_h is None:
+                            z_h = einops.rearrange(z, "i h t l -> i (t l) h")
+                            z_des_h = z_h[i, begin_h:end_h, :].sort(dim=-1, descending=True).values
+                            z_asc_h = z_des_h.flip([-1])
                         dim1_size = dim1_size_h
                         begin = begin_h
                         end = end_h
@@ -2026,7 +2032,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 #z_asc = z_des.flip([-1])
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 target = (z_v[i, begin:end, :] >= z_des_exp) | (z_v[i, begin:end, :] <= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -2086,7 +2092,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_sel = z_des[:, thres_top]
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 #z_asc = z_des.flip([-1])
-                                z_des_sel = z_des[:, thres_bottom]
+                                z_asc_sel = z_asc[:, thres_bottom]
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 target = (z_v[i, begin:end, :] < z_des_exp) & (z_v[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -2110,7 +2116,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             z_des_sel = z_des[:, thres_top]
                             z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                             #z_asc = z_des.flip([-1])
-                            z_des_sel = z_des[:, thres_bottom]
+                            z_asc_sel = z_asc[:, thres_bottom]
                             z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                             target = (z_v[i, begin:end, :] < z_des_exp) & (z_v[i, begin:end, :] > z_asc_exp)
                             if debug: print(target.to(device="cpu").nonzero().tolist())
@@ -2177,5 +2183,8 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                         z_h = einops.rearrange(z, "i h t l -> i (t l) h")
                     else:
                         continue  
+                z_hl = None
+                z_l = None
+                z_h = None
     z = einops.rearrange(z, "i h t l -> (i h) l t")
     return z

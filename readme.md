@@ -26,7 +26,7 @@ There are 22 types of key:
 - "s": Similar to "q" but applied after softmax. Heads and latent will be sorted for thresholding.
 - "sl": Similar to "s" but only latent elements will be sorted for thresholding.
 - "sh": Similar to "s" but only heads will be sorted for thresholding.
-- "o": Emphasis will be applied after each `torch.einsum('b i j, b j d -> b i d', sim, v)` in cross attention where sim is out put of "s".
+- "o": Emphasis will be applied after each `torch.einsum('b i j, b j d -> b i d', sim, v)` in cross attention where sim is output of "s".
 Heads and latent elements will be sorted for thresholding.
 - "ol": Similar to "o" but only latent elements will be sorted for thresholding.
 - "oh": Similar to "o" but only heads will be sorted for thresholding.
@@ -38,6 +38,7 @@ If you omit key, it will be interpreted as "c".
 
 Note that using "q", "qh", "ql", "s", "sh", "sl", "o", "ol", "oh", "t", "tl", "th" requires to enable Extra Mode which makes slower because of disabling optimizations.
 For "o", "ol", "oh", "t", "tl", "th", use following syntax. Otherwise, position of token is used as range of channels.
+
 `"( CHANNEL" [<start_of_channel>] : [<end_of_channel>] ":" ("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]] [("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]]]+ ")"`
 
 Threshold has 3 ways of interpretations:
