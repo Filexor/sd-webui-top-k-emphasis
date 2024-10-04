@@ -428,7 +428,7 @@ def hook_forward(self):
         # [..., 74, 75, 76, 76, 76, 76, ...]]
         pq = emphasis.emphasis_crossattention(x.clone(), TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "px", 
                                   TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
-        q = self.to_q(x)
+        q = self.to_q(pq)
         q = emphasis.emphasis_crossattention(q, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "x", 
                                   TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         context = default(context, x)
