@@ -1336,8 +1336,8 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
             for pair in pairs:
                 begin = 0 if pair.begin is None else int(pair.begin * z.shape[1]) if pair.begin < 1.0 else max(min(int(pair.begin), z.shape[1]), 0)
                 end = z.shape[1] if pair.end is None else int(pair.end * z.shape[1]) if pair.end < 1.0 else max(min(int(pair.end), z.shape[1]), 0)
-                z_des = z[i, begin:end, :].sort(dim=-1, descending=True).values
-                z_asc = z_des.flip([-1])
+                z_des = None
+                z_asc = None
                 for multiplier in pair.multipliers:
                     if multiplier.key == key:
                         mode = None
@@ -1378,6 +1378,9 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                         postoffset -= option[1]
                         if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
                             continue
+                        if z_des is None or z_asc is None:
+                            z_des = z[i, begin:end, :].sort(dim=-1, descending=True).values
+                            z_asc = z_des.flip([-1])
                         weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
                         preoffset = torch.asarray([preoffset], dtype=torch.float32, device=z.device)
                         postoffset = torch.asarray([postoffset], dtype=torch.float32, device=z.device)
@@ -1581,6 +1584,8 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z[i, begin:end, thres_top:thres_bottom] += preoffset
                                 z[i, begin:end, thres_top:thres_bottom] *= weight
                                 z[i, begin:end, thres_top:thres_bottom] += postoffset
+                z_des = None
+                z_asc = None
     return z
 
 def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[EmphasisPair]], multipliers_neg: list[list[EmphasisPair]], keys: list[str], crossattentioncounter, emphasis_view_update, debug):

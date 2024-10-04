@@ -16,6 +16,8 @@ There are 22 types of key:
 - "c": Emphasis will be applied after embeddings being converted to conditioning.
 - "l": similar to "c", but only for "clip_l". Both SD1.5 and SDXL uses "clip_l".
 - "g": similar to "c", but only for "clip_g". SDXL also uses "clip_g".
+- "px": Emphasis will be applied before conditioning being feeded to each to_q in cross attention.
+- "x": Emphasis will be applied after conditioning being feeded to each to_q in cross attention.
 - "pk": Emphasis will be applied before conditioning being feeded to each to_k in cross attention.
 - "k": Emphasis will be applied after conditioning being feeded to each to_k in cross attention.
 - "pv": Emphasis will be applied before conditioning being feeded to each to_v in cross attention.

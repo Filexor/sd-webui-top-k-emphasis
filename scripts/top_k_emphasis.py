@@ -426,7 +426,11 @@ def hook_forward(self):
         # if size of tokens is not uniform, last token of short tensor will be broadcasted. i do not care such case.
         #[[..., 74, 75, 76, 77, 78, 79, ...],
         # [..., 74, 75, 76, 76, 76, 76, ...]]
+        pq = emphasis.emphasis_crossattention(x.clone(), TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "px", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         q = self.to_q(x)
+        q = emphasis.emphasis_crossattention(q, TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "x", 
+                                  TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
         context = default(context, x)
         context_k = emphasis.emphasis_crossattention(context.clone(), TopKEmphasis.reconstructed_positive_multiplier, TopKEmphasis.reconstructed_negative_multiplier, "pk", 
                                   TopKEmphasis.crossattentioncounter, TopKEmphasis.emphasis_view_update, TopKEmphasis.debug)
