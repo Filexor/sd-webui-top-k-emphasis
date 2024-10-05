@@ -39,7 +39,8 @@ Heads and latent elements will be sorted for thresholding.
 If you omit key, it will be interpreted as "c".
 
 Note that using "q", "qh", "ql", "s", "sh", "sl", "o", "ol", "oh", "t", "tl", "th" requires to enable Extra Mode which makes slower because of disabling optimizations.
-For "o", "ol", "oh", "t", "tl", "th", use following syntax. Otherwise, position of token is used as range of channels.
+
+For "px", "x", "o", "ol", "oh", "t", "tl", "th", use following syntax. Otherwise, position of token is used as range of channels.
 
 `"( CHANNEL" [<start_of_channel>] : [<end_of_channel>] ":" ("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]] [("+"|"-") <weight>[<key>[<threshold>[<option>[<value>]]]]]+ ")"`
 
@@ -51,7 +52,7 @@ Threshold has 3 ways of interpretations:
 If you omit threshold, it will be interpreted as 0.
 Note that even for same key, number of channels may vary. e.g. clip_l and clip_g has different number of channels. See "Tipical number of channels" below.
 
-There are 10 types of option:
+There are 17 types of option:
 - "b": Threshold will be applied in top of range of `[:threshold]` and `[-value:]`.
 - "o": Opposite of "b" will be applied.
 - "m": Threshold will be applied in top of range of `[median-threshold:median+value]` where median is half of channels.
@@ -67,6 +68,11 @@ Important: Do not combine above 5 options. Combined behavior is undefined.
 - "a": Adds `value` after appling emphasis.
 - "ps": Subtracts `value` before appling emphasis.
 - "s": Subtracts `value` after appling emphasis.
+- "ta": Sum of thresholded elements will be added to `value` th element.
+- "taa": Sum of absolute of thresholded elements will be added to `value` th element.
+- "ts": Sum of thresholded elements will be subtracted to `value` th element.
+- "taa": Sum of absolute of thresholded elements will be subtracted to `value` th element.
+- "tw": Sets multiplier of "ta" and "ts" by `value`.
 ## Notes
 ### Typical number of channels
 - "c": 768 for clip_l and 1280 for clip_g

@@ -1,10 +1,44 @@
-from math import ceil
 import torch
 import einops
 
 from modules.devices import device
 
 from scripts.parsing import EmphasisPair
+
+
+class TransferObject():
+    def __init__(self, device: torch.device) -> None:
+        self.targets_positive: list[int] = []
+        self.targets_negative: list[int] = []
+        self.targets_absolute_positive: list[int] = []
+        self.targets_absolute_negative: list[int] = []
+        self.multiplier: torch.Tensor = torch.asarray([1.0], device=device)
+    
+    def has_target(self) -> bool:
+        return len(self.targets_positive) >= 1 or len(self.targets_negative) >= 1 or len(self.targets_absolute_positive) >= 1 or len(self.targets_absolute_negative) >= 1
+
+def apply_emphasis(z: torch.Tensor, i:int, begin: int, end: int, target: torch.Tensor, 
+                   preoffset: torch.Tensor, weight: torch.Tensor, postoffset: torch.Tensor, 
+                   zero: torch.Tensor, one: torch.Tensor,
+                   transfer_object: TransferObject):
+    transfer_values = torch.zeros_like(target, dtype=torch.float32)
+    transfer_absolute_values = torch.zeros_like(target, dtype=torch.float32)
+    if transfer_object.has_target():
+        transfer_values += torch.where(target, z[i, begin:end, :] * transfer_object.multiplier, zero)
+        transfer_absolute_values += torch.where(target, z[i, begin:end, :] * transfer_object.multiplier, zero).abs()
+        transfer_sum = transfer_values.sum(dim=-1)
+        transfer_absolute_sum = transfer_absolute_values.sum(dim=-1)
+    for transfer_target in transfer_object.targets_positive:
+        z[i, begin:end, transfer_target] += transfer_sum
+    for transfer_target in transfer_object.targets_negative:
+        z[i, begin:end, transfer_target] -= transfer_sum
+    for transfer_target in transfer_object.targets_absolute_positive:
+        z[i, begin:end, transfer_target] += transfer_absolute_sum
+    for transfer_target in transfer_object.targets_absolute_negative:
+        z[i, begin:end, transfer_target] -= transfer_absolute_sum
+    z[i, begin:end, :] += torch.where(target, preoffset, zero)
+    z[i, begin:end, :] *= torch.where(target, weight, one)
+    z[i, begin:end, :] += torch.where(target, postoffset, zero)
 
 class Emphasis:
     name: str = "Base"
@@ -70,6 +104,7 @@ class TopKEmphasis(Emphasis):
                             value = None
                             preoffset = 0.0
                             postoffset = 0.0
+                            transfer_object = TransferObject(self.z.device)
                             for option in multiplier.options:
                                 match option[0]:
                                     case "b" | "o" | "m" | "r":
@@ -103,6 +138,25 @@ class TopKEmphasis(Emphasis):
                                     case "s":
                                         if option[1] is not None:
                                             postoffset -= option[1]
+                                    case "ta":
+                                        if option[1] is not None:
+                                            transfer_value = min(int(option[1] * self.z.shape[2]), self.z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), self.z.shape[2] - 1), 0)
+                                            transfer_object.targets_positive.append(transfer_value)
+                                    case "ts":
+                                        if option[1] is not None:
+                                            transfer_value = min(int(option[1] * self.z.shape[2]), self.z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), self.z.shape[2] - 1), 0)
+                                            transfer_object.targets_negative.append(transfer_value)
+                                    case "taa":
+                                        if option[1] is not None:
+                                            transfer_value = min(int(option[1] * self.z.shape[2]), self.z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), self.z.shape[2] - 1), 0)
+                                            transfer_object.targets_absolute_positive.append(transfer_value)
+                                    case "tas":
+                                        if option[1] is not None:
+                                            transfer_value = min(int(option[1] * self.z.shape[2]), self.z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), self.z.shape[2] - 1), 0)
+                                            transfer_object.targets_absolute_negative.append(transfer_value)
+                                    case "tw":
+                                        if option[1] is not None:
+                                            transfer_object.multiplier = torch.asarray(option[1], device=self.z.device)
                             weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=self.z.device)
                             preoffset = torch.asarray([preoffset], dtype=torch.float32, device=self.z.device)
                             postoffset = torch.asarray([postoffset], dtype=torch.float32, device=self.z.device)
@@ -121,9 +175,7 @@ class TopKEmphasis(Emphasis):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     target = self.z[i, begin:end, :] >= z_des_exp
                                     if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                    self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "b":
                                     if multiplier.threshold == 0.0 and value == 0.0:
                                         if self.debug: print("Emphasis will be skipped.")
@@ -140,9 +192,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = self.z[i, begin:end, :] >= z_des_exp
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold == 0.0 and value != 0.0:
                                         thres_top = value
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -155,9 +205,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = self.z[i, begin:end, :] <= z_des_exp
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold != 0.0 and value != 0.0:
                                         thres_top = multiplier.threshold
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -179,15 +227,12 @@ class TopKEmphasis(Emphasis):
                                         z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = (self.z[i, begin:end, :] >= z_des_exp) | (self.z[i, begin:end, :] <= z_asc_exp)
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "o":
                                     if multiplier.threshold == 0.0 and value == 0.0:
-                                        if self.debug: print("Emphasis will be applied to all elements in specified tokens.")
-                                        self.z[i, begin:end, :] += preoffset
-                                        self.z[i, begin:end, :] *= weight
-                                        self.z[i, begin:end, :] += postoffset
+                                        target = torch.ones_like(self.z[i, begin:end, :], dtype=torch.bool, device=self.z.device)
+                                        if self.debug: print(target.to(device="cpu").nonzero().tolist())
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold != 0.0 and value == 0.0:
                                         thres_top = multiplier.threshold
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -200,9 +245,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = self.z[i, begin:end, :] < z_des_exp
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold == 0.0 and value != 0.0:
                                         thres_top = value
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -215,9 +258,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = self.z[i, begin:end, :] > z_des_exp
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold != 0.0 and value != 0.0:
                                         thres_top = multiplier.threshold
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -239,9 +280,7 @@ class TopKEmphasis(Emphasis):
                                         z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = (self.z[i, begin:end, :] < z_des_exp) & (self.z[i, begin:end, :] > z_asc_exp)
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "m":
                                     thres_top = multiplier.threshold
                                     thres_top = (self.z.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
@@ -263,9 +302,7 @@ class TopKEmphasis(Emphasis):
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     target = (self.z[i, begin:end, :] < z_des_exp) & (self.z[i, begin:end, :] > z_asc_exp)
                                     if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                    self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "r":
                                     thres_top = multiplier.threshold
                                     #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -287,9 +324,7 @@ class TopKEmphasis(Emphasis):
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     target = (self.z[i, begin:end, :] <= z_des_exp) & (self.z[i, begin:end, :] >= z_asc_exp)
                                     if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                    self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "c":
                                     thres_top = multiplier.threshold
                                     #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -303,9 +338,10 @@ class TopKEmphasis(Emphasis):
                                     thres_bottom = self.z.shape[2] if thres_bottom > self.z.shape[2] else thres_bottom
                                     # thres_bottom = thres_bottom - 1
                                     thres_bottom = int(thres_bottom)
-                                    self.z[i, begin:end, thres_top:thres_bottom] += preoffset
-                                    self.z[i, begin:end, thres_top:thres_bottom] *= weight
-                                    self.z[i, begin:end, thres_top:thres_bottom] += postoffset
+                                    target = torch.zeros_like(self.z[i, begin:end, :], dtype=torch.bool, device=self.z.device)
+                                    target[:, thres_top:thres_bottom] = True
+                                    if self.debug: print(target.to(device="cpu").nonzero().tolist())
+                                    apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
         else:
             for i, pairs in enumerate(self.multipliers):
                 for pair in pairs:
@@ -319,6 +355,7 @@ class TopKEmphasis(Emphasis):
                             value = None
                             preoffset = 0.0
                             postoffset = 0.0
+                            transfer_object = TransferObject(self.z.device)
                             for option in multiplier.options:
                                 match option[0]:
                                     case "b" | "o" | "m" | "r":
@@ -352,6 +389,25 @@ class TopKEmphasis(Emphasis):
                                     case "s":
                                         if option[1] is not None:
                                             postoffset -= option[1]
+                                    case "ta":
+                                        if option[1] is not None:
+                                            transfer_value = min(int(option[1] * self.z.shape[2]), self.z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), self.z.shape[2] - 1), 0)
+                                            transfer_object.targets_positive.append(transfer_value)
+                                    case "ts":
+                                        if option[1] is not None:
+                                            transfer_value = min(int(option[1] * self.z.shape[2]), self.z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), self.z.shape[2] - 1), 0)
+                                            transfer_object.targets_negative.append(transfer_value)
+                                    case "taa":
+                                        if option[1] is not None:
+                                            transfer_value = min(int(option[1] * self.z.shape[2]), self.z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), self.z.shape[2] - 1), 0)
+                                            transfer_object.targets_absolute_positive.append(transfer_value)
+                                    case "tas":
+                                        if option[1] is not None:
+                                            transfer_value = min(int(option[1] * self.z.shape[2]), self.z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), self.z.shape[2] - 1), 0)
+                                            transfer_object.targets_absolute_negative.append(transfer_value)
+                                    case "tw":
+                                        if option[1] is not None:
+                                            transfer_object.multiplier = torch.asarray(option[1], device=self.z.device)
                             weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=self.z.device)
                             preoffset = torch.asarray([preoffset], dtype=torch.float32, device=self.z.device)
                             postoffset = torch.asarray([postoffset], dtype=torch.float32, device=self.z.device)
@@ -370,9 +426,7 @@ class TopKEmphasis(Emphasis):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     target = self.z[i, begin:end, :] >= z_des_exp
                                     if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                    self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "b":
                                     if multiplier.threshold == 0.0 and value == 0.0:
                                         if self.debug: print("Emphasis will be skipped.")
@@ -389,9 +443,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = self.z[i, begin:end, :] >= z_des_exp
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold == 0.0 and value != 0.0:
                                         thres_top = value
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -404,9 +456,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = self.z[i, begin:end, :] <= z_des_exp
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold != 0.0 and value != 0.0:
                                         thres_top = multiplier.threshold
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -428,15 +478,12 @@ class TopKEmphasis(Emphasis):
                                         z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = (self.z[i, begin:end, :] >= z_des_exp) | (self.z[i, begin:end, :] <= z_asc_exp)
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "o":
                                     if multiplier.threshold == 0.0 and value == 0.0:
-                                        if self.debug: print("Emphasis will be applied to all elements in specified tokens.")
-                                        self.z[i, begin:end, :] += preoffset
-                                        self.z[i, begin:end, :] *= weight
-                                        self.z[i, begin:end, :] += postoffset
+                                        target = torch.ones_like(self.z[i, begin:end, :], dtype=torch.bool, device=self.z.device)
+                                        if self.debug: print(target.to(device="cpu").nonzero().tolist())
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold != 0.0 and value == 0.0:
                                         thres_top = multiplier.threshold
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -449,9 +496,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = self.z[i, begin:end, :] < z_des_exp
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold == 0.0 and value != 0.0:
                                         thres_top = value
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -464,9 +509,7 @@ class TopKEmphasis(Emphasis):
                                         z_des_exp = z_des_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = self.z[i, begin:end, :] > z_des_exp
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                     elif multiplier.threshold != 0.0 and value != 0.0:
                                         thres_top = multiplier.threshold
                                         #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -488,9 +531,7 @@ class TopKEmphasis(Emphasis):
                                         z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                         target = (self.z[i, begin:end, :] < z_des_exp) & (self.z[i, begin:end, :] > z_asc_exp)
                                         if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                        self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                        self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                        self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                        apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "m":
                                     thres_top = multiplier.threshold
                                     thres_top = (self.z.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
@@ -512,9 +553,7 @@ class TopKEmphasis(Emphasis):
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     target = (self.z[i, begin:end, :] < z_des_exp) & (self.z[i, begin:end, :] > z_asc_exp)
                                     if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                    self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "r":
                                     thres_top = multiplier.threshold
                                     #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -536,9 +575,7 @@ class TopKEmphasis(Emphasis):
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, self.z.shape[2]))
                                     target = (self.z[i, begin:end, :] <= z_des_exp) & (self.z[i, begin:end, :] >= z_asc_exp)
                                     if self.debug: print(target.to(device="cpu").nonzero().tolist())
-                                    self.z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    self.z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    self.z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 case "c":
                                     thres_top = multiplier.threshold
                                     #thres_top = self.z.shape[2] if thres_top == 0 else thres_top
@@ -552,9 +589,10 @@ class TopKEmphasis(Emphasis):
                                     thres_bottom = self.z.shape[2] if thres_bottom > self.z.shape[2] else thres_bottom
                                     # thres_bottom = thres_bottom - 1
                                     thres_bottom = int(thres_bottom)
-                                    self.z[i, begin:end, thres_top:thres_bottom] += preoffset
-                                    self.z[i, begin:end, thres_top:thres_bottom] *= weight
-                                    self.z[i, begin:end, thres_top:thres_bottom] += postoffset
+                                    target = torch.zeros_like(self.z[i, begin:end, :], dtype=torch.bool, device=self.z.device)
+                                    target[:, thres_top:thres_bottom] = True
+                                    if self.debug: print(target.to(device="cpu").nonzero().tolist())
+                                    apply_emphasis(self.z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
 
 def to_structure_of_tensor(input: list[EmphasisPair], key: str) -> tuple[torch.Tensor, torch.Tensor]: 
     count = 0
@@ -594,6 +632,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                         value = None
                         preoffset = 0.0
                         postoffset = 0.0
+                        transfer_object = TransferObject(z.device)
                         for option in multiplier.options:
                             match option[0]:
                                 case "b" | "o" | "m" | "r":
@@ -627,6 +666,25 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 case "s":
                                     if option[1] is not None:
                                         postoffset -= option[1]
+                                case "ta":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_positive.append(transfer_value)
+                                case "ts":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_negative.append(transfer_value)
+                                case "taa":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_absolute_positive.append(transfer_value)
+                                case "tas":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_absolute_negative.append(transfer_value)
+                                case "tw":
+                                    if option[1] is not None:
+                                        transfer_object.multiplier = torch.asarray(option[1], device=z.device)
                         weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
                         preoffset = torch.asarray([preoffset], dtype=torch.float32, device=z.device)
                         postoffset = torch.asarray([postoffset], dtype=torch.float32, device=z.device)
@@ -645,9 +703,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = z[i, begin:end, :] >= z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "b":
                                 if multiplier.threshold == 0.0 and value == 0.0:
                                     if debug: print("Emphasis will be skipped.")
@@ -664,9 +720,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] >= z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold == 0.0 and value != 0.0:
                                     thres_top = value
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -679,9 +733,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] <= z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value != 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -703,15 +755,12 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "o":
                                 if multiplier.threshold == 0.0 and value == 0.0:
-                                    if debug: print("Emphasis will be applied to all elements in specified tokens.")
-                                    z[i, begin:end, :] += preoffset
-                                    z[i, begin:end, :] *= weight
-                                    z[i, begin:end, :] += postoffset
+                                    target = torch.ones_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                                    if debug: print(target.to(device="cpu").nonzero().tolist())
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value == 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -724,9 +773,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] < z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold == 0.0 and value != 0.0:
                                     thres_top = value
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -739,9 +786,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] > z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value != 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -763,9 +808,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "m":
                                 thres_top = multiplier.threshold
                                 thres_top = (z.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
@@ -787,9 +830,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "r":
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -811,9 +852,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] <= z_des_exp) & (z[i, begin:end, :] >= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "c":
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -827,9 +866,10 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 thres_bottom = z.shape[2] if thres_bottom > z.shape[2] else thres_bottom
                                 # thres_bottom = thres_bottom - 1
                                 thres_bottom = int(thres_bottom)
-                                z[i, begin:end, thres_top:thres_bottom] += preoffset
-                                z[i, begin:end, thres_top:thres_bottom] *= weight
-                                z[i, begin:end, thres_top:thres_bottom] += postoffset
+                                target = torch.zeros_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                                target[:, thres_top:thres_bottom] = True
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
     else:
         for i, pairs in enumerate(multipliers):
             for pair in pairs:
@@ -843,6 +883,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                         value = None
                         preoffset = 0.0
                         postoffset = 0.0
+                        transfer_object = TransferObject(z.device)
                         for option in multiplier.options:
                             match option[0]:
                                 case "b" | "o" | "m" | "r":
@@ -876,6 +917,25 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 case "s":
                                     if option[1] is not None:
                                         postoffset -= option[1]
+                                case "ta":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_positive.append(transfer_value)
+                                case "ts":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_negative.append(transfer_value)
+                                case "taa":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_absolute_positive.append(transfer_value)
+                                case "tas":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_absolute_negative.append(transfer_value)
+                                case "tw":
+                                    if option[1] is not None:
+                                        transfer_object.multiplier = torch.asarray(option[1], device=z.device)
                         weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
                         preoffset = torch.asarray([preoffset], dtype=torch.float32, device=z.device)
                         postoffset = torch.asarray([postoffset], dtype=torch.float32, device=z.device)
@@ -894,9 +954,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = z[i, begin:end, :] >= z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "b":
                                 if multiplier.threshold == 0.0 and value == 0.0:
                                     if debug: print("Emphasis will be skipped.")
@@ -913,9 +971,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] >= z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold == 0.0 and value != 0.0:
                                     thres_top = value
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -928,9 +984,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] <= z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value != 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -952,15 +1006,12 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "o":
                                 if multiplier.threshold == 0.0 and value == 0.0:
-                                    if debug: print("Emphasis will be applied to all elements in specified tokens.")
-                                    z[i, begin:end, :] += preoffset
-                                    z[i, begin:end, :] *= weight
-                                    z[i, begin:end, :] += postoffset
+                                    target = torch.ones_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                                    if debug: print(target.to(device="cpu").nonzero().tolist())
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value == 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -973,9 +1024,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] < z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold == 0.0 and value != 0.0:
                                     thres_top = value
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -988,9 +1037,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] > z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value != 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1012,9 +1059,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "m":
                                 thres_top = multiplier.threshold
                                 thres_top = (z.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
@@ -1036,9 +1081,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "r":
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1060,9 +1103,7 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] <= z_des_exp) & (z[i, begin:end, :] >= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "c":
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1076,9 +1117,10 @@ def emphasis_b(z, multipliers, emphasis_view_update, embedding_key, debug):
                                 thres_bottom = z.shape[2] if thres_bottom > z.shape[2] else thres_bottom
                                 # thres_bottom = thres_bottom - 1
                                 thres_bottom = int(thres_bottom)
-                                z[i, begin:end, thres_top:thres_bottom] += preoffset
-                                z[i, begin:end, thres_top:thres_bottom] *= weight
-                                z[i, begin:end, thres_top:thres_bottom] += postoffset
+                                target = torch.zeros_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                                target[:, thres_top:thres_bottom] = True
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
     return z
 
 def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[EmphasisPair]], multipliers_neg: list[list[EmphasisPair]], key: str, crossattentioncounter, emphasis_view_update, debug):
@@ -1094,6 +1136,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                         value = None
                         preoffset = 0.0
                         postoffset = 0.0
+                        transfer_object = TransferObject(z.device)
                         crossattentioncountertargets = []
                         for option in multiplier.options:
                             match option[0]:
@@ -1126,6 +1169,25 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 case "s":
                                     if option[1] is not None:
                                         postoffset -= option[1]
+                                case "ta":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_positive.append(transfer_value)
+                                case "ts":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_negative.append(transfer_value)
+                                case "taa":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_absolute_positive.append(transfer_value)
+                                case "tas":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_absolute_negative.append(transfer_value)
+                                case "tw":
+                                    if option[1] is not None:
+                                        transfer_object.multiplier = torch.asarray(option[1], device=z.device)
                         if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
                             continue
                         weight = torch.asarray([multiplier.weight], dtype=torch.float32, device=z.device)
@@ -1146,9 +1208,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = z[i, begin:end, :] >= z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "b":
                                 if multiplier.threshold == 0.0 and value == 0.0:
                                     if debug: print("Emphasis will be skipped.")
@@ -1165,9 +1225,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] >= z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold == 0.0 and value != 0.0:
                                     thres_top = value
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1180,9 +1238,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] <= z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value != 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1204,15 +1260,12 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "o":
                                 if multiplier.threshold == 0.0 and value == 0.0:
-                                    if debug: print("Emphasis will be applied to all elements in specified tokens.")
-                                    z[i, begin:end, :] += preoffset
-                                    z[i, begin:end, :] *= weight
-                                    z[i, begin:end, :] += postoffset
+                                    target = torch.ones_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                                    if debug: print(target.to(device="cpu").nonzero().tolist())
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value == 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1225,9 +1278,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] < z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold == 0.0 and value != 0.0:
                                     thres_top = value
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1240,9 +1291,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] > z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value != 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1264,9 +1313,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "m":
                                 thres_top = multiplier.threshold
                                 thres_top = (z.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
@@ -1288,9 +1335,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "r":
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1312,9 +1357,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] <= z_des_exp) & (z[i, begin:end, :] >= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "c":
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1328,9 +1371,10 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 thres_bottom = z.shape[2] if thres_bottom > z.shape[2] else thres_bottom
                                 # thres_bottom = thres_bottom - 1
                                 thres_bottom = int(thres_bottom)
-                                z[i, begin:end, thres_top:thres_bottom] += preoffset
-                                z[i, begin:end, thres_top:thres_bottom] *= weight
-                                z[i, begin:end, thres_top:thres_bottom] += postoffset
+                                target = torch.zeros_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                                target[:, thres_top:thres_bottom] = True
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
     else:
         for i, pairs in enumerate(multipliers):
             for pair in pairs:
@@ -1344,6 +1388,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                         value = None
                         preoffset = 0.0
                         postoffset = 0.0
+                        transfer_object = TransferObject(z.device)
                         crossattentioncountertargets = []
                         for option in multiplier.options:
                             match option[0]:
@@ -1376,6 +1421,25 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 case "s":
                                     if option[1] is not None:
                                         postoffset -= option[1]
+                                case "ta":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_positive.append(transfer_value)
+                                case "ts":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_negative.append(transfer_value)
+                                case "taa":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_absolute_positive.append(transfer_value)
+                                case "tas":
+                                    if option[1] is not None:
+                                        transfer_value = min(int(option[1] * z.shape[2]), z.shape[2] - 1) if option[1] < 1.0 else max(min(int(option[1]), z.shape[2] - 1), 0)
+                                        transfer_object.targets_absolute_negative.append(transfer_value)
+                                case "tw":
+                                    if option[1] is not None:
+                                        transfer_object.multiplier = torch.asarray(option[1], device=z.device)
                         if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
                             continue
                         if z_des is None or z_asc is None:
@@ -1399,9 +1463,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = z[i, begin:end, :] >= z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "b":
                                 if multiplier.threshold == 0.0 and value == 0.0:
                                     if debug: print("Emphasis will be skipped.")
@@ -1418,9 +1480,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] >= z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold == 0.0 and value != 0.0:
                                     thres_top = value
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1433,9 +1493,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] <= z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value != 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1457,15 +1515,12 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "o":
                                 if multiplier.threshold == 0.0 and value == 0.0:
-                                    if debug: print("Emphasis will be applied to all elements in specified tokens.")
-                                    z[i, begin:end, :] += preoffset
-                                    z[i, begin:end, :] *= weight
-                                    z[i, begin:end, :] += postoffset
+                                    target = torch.ones_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                                    if debug: print(target.to(device="cpu").nonzero().tolist())
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value == 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1478,9 +1533,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] < z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold == 0.0 and value != 0.0:
                                     thres_top = value
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1493,9 +1546,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = z[i, begin:end, :] > z_des_exp
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                                 elif multiplier.threshold != 0.0 and value != 0.0:
                                     thres_top = multiplier.threshold
                                     #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1517,9 +1568,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                     z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                     target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                     if debug: print(target.to(device="cpu").nonzero().tolist())
-                                    z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                    z[i, begin:end, :] *= torch.where(target, weight, one)
-                                    z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                    apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "m":
                                 thres_top = multiplier.threshold
                                 thres_top = (z.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
@@ -1541,9 +1590,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "r":
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1565,9 +1612,7 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] <= z_des_exp) & (z[i, begin:end, :] >= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             case "c":
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1581,9 +1626,10 @@ def emphasis_crossattention(z: torch.Tensor, multipliers_pos: list[list[Emphasis
                                 thres_bottom = z.shape[2] if thres_bottom > z.shape[2] else thres_bottom
                                 # thres_bottom = thres_bottom - 1
                                 thres_bottom = int(thres_bottom)
-                                z[i, begin:end, thres_top:thres_bottom] += preoffset
-                                z[i, begin:end, thres_top:thres_bottom] *= weight
-                                z[i, begin:end, thres_top:thres_bottom] += postoffset
+                                target = torch.zeros_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                                target[:, thres_top:thres_bottom] = True
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                 z_des = None
                 z_asc = None
     return z
@@ -1602,6 +1648,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                     value = None
                     preoffset = 0.0
                     postoffset = 0.0
+                    transfer_object = TransferObject(z.device)
                     crossattentioncountertargets = []
                     for option in multiplier.options:
                         match option[0]:
@@ -1634,6 +1681,89 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             case "s":
                                 if option[1] is not None:
                                     postoffset -= option[1]
+                            case "ta":
+                                if option[1] is not None:
+                                    if multiplier.key == keys[0]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1] * z.shape[3]), z.shape[1] * z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] * z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[1]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[3]), z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[2]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1]), z.shape[1] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] - 1), 0)
+                                    else:
+                                        continue
+                                    transfer_object.targets_positive.append(transfer_value)
+                            case "ts":
+                                if option[1] is not None:
+                                    if multiplier.key == keys[0]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1] * z.shape[3]), z.shape[1] * z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] * z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[1]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[3]), z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[2]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1]), z.shape[1] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] - 1), 0)
+                                    else:
+                                        continue
+                                    transfer_object.targets_negative.append(transfer_value)
+                            case "taa":
+                                if option[1] is not None:
+                                    if multiplier.key == keys[0]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1] * z.shape[3]), z.shape[1] * z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] * z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[1]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[3]), z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[2]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1]), z.shape[1] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] - 1), 0)
+                                    else:
+                                        continue
+                                    transfer_object.targets_absolute_positive.append(transfer_value)
+                            case "tas":
+                                if option[1] is not None:
+                                    if multiplier.key == keys[0]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1] * z.shape[3]), z.shape[1] * z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] * z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[1]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[3]), z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[2]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1]), z.shape[1] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] - 1), 0)
+                                    else:
+                                        continue
+                                    transfer_object.targets_absolute_negative.append(transfer_value)
+                            case "tw":
+                                if option[1] is not None:
+                                    transfer_object.multiplier = torch.asarray(option[1], device=z.device)
                     if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
                         continue
                     if multiplier.key == keys[0]:
@@ -1674,9 +1804,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                             target = z[i, begin:end, :] >= z_des_exp
                             if debug: print(target.to(device="cpu").nonzero().tolist())
-                            z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                            z[i, begin:end, :] *= torch.where(target, weight, one)
-                            z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                            apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "b":
                             if multiplier.threshold == 0.0 and value == 0.0:
                                 if debug: print("Emphasis will be skipped.")
@@ -1693,9 +1821,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = z[i, begin:end, :] >= z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold == 0.0 and value != 0.0:
                                 thres_top = value
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1708,9 +1834,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = z[i, begin:end, :] <= z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold != 0.0 and value != 0.0:
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1732,15 +1856,12 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] >= z_des_exp) | (z[i, begin:end, :] <= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "o":
                             if multiplier.threshold == 0.0 and value == 0.0:
-                                if debug: print("Emphasis will be applied to all elements in specified tokens.")
-                                z[i, begin:end, :] += preoffset
-                                z[i, begin:end, :] *= weight
-                                z[i, begin:end, :] += postoffset
+                                target = torch.ones_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold != 0.0 and value == 0.0:
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1753,9 +1874,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = z[i, begin:end, :] < z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold == 0.0 and value != 0.0:
                                 thres_top = value
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1768,9 +1887,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = z[i, begin:end, :] > z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold != 0.0 and value != 0.0:
                                 thres_top = multiplier.threshold
                                 #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1792,9 +1909,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                                 target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z[i, begin:end, :] *= torch.where(target, weight, one)
-                                z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "m":
                             thres_top = multiplier.threshold
                             thres_top = (z.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
@@ -1816,9 +1931,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                             target = (z[i, begin:end, :] < z_des_exp) & (z[i, begin:end, :] > z_asc_exp)
                             if debug: print(target.to(device="cpu").nonzero().tolist())
-                            z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                            z[i, begin:end, :] *= torch.where(target, weight, one)
-                            z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                            apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "r":
                             thres_top = multiplier.threshold
                             #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1840,9 +1953,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z.shape[2]))
                             target = (z[i, begin:end, :] <= z_des_exp) & (z[i, begin:end, :] >= z_asc_exp)
                             if debug: print(target.to(device="cpu").nonzero().tolist())
-                            z[i, begin:end, :] += torch.where(target, preoffset, zero)
-                            z[i, begin:end, :] *= torch.where(target, weight, one)
-                            z[i, begin:end, :] += torch.where(target, postoffset, zero)
+                            apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "c":
                             thres_top = multiplier.threshold
                             #thres_top = z.shape[2] if thres_top == 0 else thres_top
@@ -1856,9 +1967,10 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             thres_bottom = z.shape[2] if thres_bottom > z.shape[2] else thres_bottom
                             # thres_bottom = thres_bottom - 1
                             thres_bottom = int(thres_bottom)
-                            z[i, begin:end, thres_top:thres_bottom] += preoffset
-                            z[i, begin:end, thres_top:thres_bottom] *= weight
-                            z[i, begin:end, thres_top:thres_bottom] += postoffset
+                            target = torch.zeros_like(z[i, begin:end, :], dtype=torch.bool, device=z.device)
+                            target[:, thres_top:thres_bottom] = True
+                            if debug: print(target.to(device="cpu").nonzero().tolist())
+                            apply_emphasis(z, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                     if multiplier.key == keys[0]:
                         # "q", "s"
                         z = einops.rearrange(z, "i t (h l) -> i h t l", l=latent_size)
@@ -1876,8 +1988,8 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
             for pair in pairs:
                 dim1_size_hl = 1
                 z_hl = None
-                begin_hl = 0 if pair.begin is None else int(pair.begin * z.shape[2]) if pair.begin < 1.0 else max(min(int(pair.begin) * dim1_size_hl, z.shape[2]), 0)
-                end_hl = z.shape[2] if pair.end is None else int(pair.end * z.shape[2]) if pair.end < 1.0 else max(min(int(pair.end) * dim1_size_hl, z.shape[2]), 0)
+                begin_hl = 0 if pair.begin is None else int(pair.begin * z.shape[2] * dim1_size_hl) if pair.begin < 1.0 else max(min(int(pair.begin) * dim1_size_hl, z.shape[2] * dim1_size_hl), 0)
+                end_hl = z.shape[2] if pair.end is None else int(pair.end * z.shape[2] * dim1_size_hl) if pair.end < 1.0 else max(min(int(pair.end) * dim1_size_hl, z.shape[2] * dim1_size_hl), 0)
                 dim1_size_l = z.shape[1]
                 z_l = None
                 begin_l = 0 if pair.begin is None else int(pair.begin * z.shape[2] * dim1_size_l) if pair.begin < 1.0 else max(min(int(pair.begin) * dim1_size_l, z.shape[2] * dim1_size_l), 0)
@@ -1893,6 +2005,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                     value = None
                     preoffset = 0.0
                     postoffset = 0.0
+                    transfer_object = TransferObject(z.device)
                     crossattentioncountertargets = []
                     for option in multiplier.options:
                         match option[0]:
@@ -1925,6 +2038,89 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             case "s":
                                 if option[1] is not None:
                                     postoffset -= option[1]
+                            case "ta":
+                                if option[1] is not None:
+                                    if multiplier.key == keys[0]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1] * z.shape[3]), z.shape[1] * z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] * z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[1]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[3]), z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[2]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1]), z.shape[1] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] - 1), 0)
+                                    else:
+                                        continue
+                                    transfer_object.targets_positive.append(transfer_value)
+                            case "ts":
+                                if option[1] is not None:
+                                    if multiplier.key == keys[0]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1] * z.shape[3]), z.shape[1] * z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] * z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[1]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[3]), z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[2]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1]), z.shape[1] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] - 1), 0)
+                                    else:
+                                        continue
+                                    transfer_object.targets_negative.append(transfer_value)
+                            case "taa":
+                                if option[1] is not None:
+                                    if multiplier.key == keys[0]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1] * z.shape[3]), z.shape[1] * z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] * z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[1]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[3]), z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[2]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1]), z.shape[1] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] - 1), 0)
+                                    else:
+                                        continue
+                                    transfer_object.targets_absolute_positive.append(transfer_value)
+                            case "tas":
+                                if option[1] is not None:
+                                    if multiplier.key == keys[0]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1] * z.shape[3]), z.shape[1] * z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] * z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[1]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[3]), z.shape[3] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[3] - 1), 0)
+                                    elif multiplier.key == keys[2]:
+                                        if option[1] < 1.0:
+                                            transfer_value = min(int(option[1] * z.shape[1]), z.shape[1] - 1)
+                                        else:
+                                            max(min(int(option[1]), z.shape[1] - 1), 0)
+                                    else:
+                                        continue
+                                    transfer_object.targets_absolute_negative.append(transfer_value)
+                            case "tw":
+                                if option[1] is not None:
+                                    transfer_object.multiplier = torch.asarray(option[1], device=z.device)
                     if len(crossattentioncountertargets) != 0 and crossattentioncounter not in crossattentioncountertargets:
                         continue
                     if multiplier.key == keys[0]:
@@ -1983,9 +2179,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                             target = z_v[i, begin:end, :] >= z_des_exp
                             if debug: print(target.to(device="cpu").nonzero().tolist())
-                            z_v[i, begin:end, :] += torch.where(target, preoffset, zero)
-                            z_v[i, begin:end, :] *= torch.where(target, weight, one)
-                            z_v[i, begin:end, :] += torch.where(target, postoffset, zero)
+                            apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "b":
                             if multiplier.threshold == 0.0 and value == 0.0:
                                 if debug: print("Emphasis will be skipped.")
@@ -2002,9 +2196,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 target = z_v[i, begin:end, :] >= z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z_v[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z_v[i, begin:end, :] *= torch.where(target, weight, one)
-                                z_v[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold == 0.0 and value != 0.0:
                                 thres_top = value
                                 #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
@@ -2017,9 +2209,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 target = z_v[i, begin:end, :] <= z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z_v[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z_v[i, begin:end, :] *= torch.where(target, weight, one)
-                                z_v[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold != 0.0 and value != 0.0:
                                 thres_top = multiplier.threshold
                                 #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
@@ -2041,15 +2231,12 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 target = (z_v[i, begin:end, :] >= z_des_exp) | (z_v[i, begin:end, :] <= z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z_v[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z_v[i, begin:end, :] *= torch.where(target, weight, one)
-                                z_v[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "o":
                             if multiplier.threshold == 0.0 and value == 0.0:
-                                if debug: print("Emphasis will be applied to all elements in specified tokens.")
-                                z_v[i, begin:end, :] += preoffset
-                                z_v[i, begin:end, :] *= weight
-                                z_v[i, begin:end, :] += postoffset
+                                target = torch.ones_like(z_v[i, begin:end, :], dtype=torch.bool, device=z_v.device)
+                                if debug: print(target.to(device="cpu").nonzero().tolist())
+                                apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold != 0.0 and value == 0.0:
                                 thres_top = multiplier.threshold
                                 #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
@@ -2062,9 +2249,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 target = z_v[i, begin:end, :] < z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z_v[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z_v[i, begin:end, :] *= torch.where(target, weight, one)
-                                z_v[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold == 0.0 and value != 0.0:
                                 thres_top = value
                                 #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
@@ -2077,9 +2262,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_des_exp = z_des_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 target = z_v[i, begin:end, :] > z_des_exp
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z_v[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z_v[i, begin:end, :] *= torch.where(target, weight, one)
-                                z_v[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                             elif multiplier.threshold != 0.0 and value != 0.0:
                                 thres_top = multiplier.threshold
                                 #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
@@ -2101,9 +2284,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                                 z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                                 target = (z_v[i, begin:end, :] < z_des_exp) & (z_v[i, begin:end, :] > z_asc_exp)
                                 if debug: print(target.to(device="cpu").nonzero().tolist())
-                                z_v[i, begin:end, :] += torch.where(target, preoffset, zero)
-                                z_v[i, begin:end, :] *= torch.where(target, weight, one)
-                                z_v[i, begin:end, :] += torch.where(target, postoffset, zero)
+                                apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "m":
                             thres_top = multiplier.threshold
                             thres_top = (z_v.shape[2] // 2) - thres_top if thres_top >= 1 else thres_top
@@ -2125,9 +2306,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                             target = (z_v[i, begin:end, :] < z_des_exp) & (z_v[i, begin:end, :] > z_asc_exp)
                             if debug: print(target.to(device="cpu").nonzero().tolist())
-                            z_v[i, begin:end, :] += torch.where(target, preoffset, zero)
-                            z_v[i, begin:end, :] *= torch.where(target, weight, one)
-                            z_v[i, begin:end, :] += torch.where(target, postoffset, zero)
+                            apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "r":
                             thres_top = multiplier.threshold
                             #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
@@ -2149,9 +2328,7 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             z_asc_exp = z_asc_sel.unsqueeze(1).expand((-1, z_v.shape[2]))
                             target = (z_v[i, begin:end, :] <= z_des_exp) & (z_v[i, begin:end, :] >= z_asc_exp)
                             if debug: print(target.to(device="cpu").nonzero().tolist())
-                            z_v[i, begin:end, :] += torch.where(target, preoffset, zero)
-                            z_v[i, begin:end, :] *= torch.where(target, weight, one)
-                            z_v[i, begin:end, :] += torch.where(target, postoffset, zero)
+                            apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                         case "c":
                             thres_top = multiplier.threshold
                             #thres_top = z_v.shape[2] if thres_top == 0 else thres_top
@@ -2165,9 +2342,10 @@ def emphasis_crossattention2(z: torch.Tensor, heads, multipliers_pos: list[list[
                             thres_bottom = z_v.shape[2] if thres_bottom > z_v.shape[2] else thres_bottom
                             # thres_bottom = thres_bottom - 1
                             thres_bottom = int(thres_bottom)
-                            z_v[i, begin:end, thres_top:thres_bottom] += preoffset
-                            z_v[i, begin:end, thres_top:thres_bottom] *= weight
-                            z_v[i, begin:end, thres_top:thres_bottom] += postoffset
+                            target = torch.zeros_like(z_v[i, begin:end, :], dtype=torch.bool, device=z_v.device)
+                            target[:, thres_top:thres_bottom] = True
+                            if debug: print(target.to(device="cpu").nonzero().tolist())
+                            apply_emphasis(z_v, i, begin, end, target, preoffset, weight, postoffset, zero, one, transfer_object)
                     if multiplier.key == keys[0]:
                         # "q", "s"
                         z = einops.rearrange(z_v, "i t (h l) -> i h t l", l=latent_size)
